@@ -1,63 +1,59 @@
 // api/create-checkout-session.js
+
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
-// 自分のサイトのドメイン
-const ALLOWED_ORIGIN = "https://shoumeiya.info";
-
+/**
+ * Vercel の Node.js API ルート
+ * POST /api/create-checkout-session
+ */
 module.exports = async (req, res) => {
-  // --- CORS ヘッダを毎回つける ---
-  res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
-  // --- プリフライト(OPTIONS)対応 ---
-  if (req.method === "OPTIONS") {
-    // ここで 200 を返せばブラウザは「OK」と判断して POST を投げてくる
-    return res.status(200).end();
-  }
-
-  // --- それ以外で POST 以外は弾く ---
+  // メソッドチェック
   if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
     return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
-    // Vercel の Node 関数では req.body が文字列のこともあるので保険
-    const rawBody = req.body || {};
-    const body =
-      typeof rawBody === "string" ? JSON.parse(rawBody || "{}") : rawBody;
+    const { items } = req.body || {};
 
-    const items = body.items || [];
-
-    if (!Array.isArray(items) || items.length === 0) {
+    // items が正しく来ているかチェック
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      console.error("❌ items が空 or 不正: ", req.body);
       return res.status(400).json({ error: "No items in cart" });
     }
 
-    // カート → Stripe line_items へ変換
-    const lineItems = items.map((item) => ({
-      price_data: {
-        currency: "jpy",
-        product_data: {
-          name: item.name || "商品",
+    // Junさんの cart.js 仕様:
+    // { id, name, price, qty } が入っている前提で Stripe の line_items を組み立てる
+    const line_items = items.map((item) => {
+      const unitAmount = Number(item.price) || 0;
+      const quantity = Number(item.qty) || 1;
+
+      return {
+        price_data: {
+          currency: "jpy",
+          product_data: {
+            name: item.name || "ランプ",
+          },
+          // Stripe は「最小通貨単位（= 円ならそのまま整数）」で指定
+          unit_amount: unitAmount,
         },
-        // 円をそのまま整数で
-        unit_amount: item.price || 0,
-      },
-      quantity: item.quantity || 1,
-    }));
+        quantity,
+      };
+    });
+
+    console.log("✅ line_items:", line_items);
 
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       payment_method_types: ["card"],
-      line_items: lineItems,
-      success_url: "https://shoumeiya.info/thanks.html",
-      cancel_url: "https://shoumeiya.info/cart.html",
+      line_items,
+      success_url: "https://shoumeiya.info/success.html",
+      cancel_url: "https://shoumeiya.info/cancel.html",
     });
 
     return res.status(200).json({ url: session.url });
   } catch (err) {
-    console.error("Stripe error:", err);
-    return res.status(500).json({ error: "Server error" });
+    console.error("❌ Stripe エラー:", err);
+    return res.status(500).json({ error: "Internal server error" });
   }
 };
-
