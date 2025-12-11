@@ -2,28 +2,42 @@
 
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
-/**
- * Vercel の Node.js API ルート
- * POST /api/create-checkout-session
- */
 module.exports = async (req, res) => {
+  // ★ 許可したいオリジンを列挙
+  const allowedOrigins = [
+    "https://shoumeiya.info",
+    "https://www.shoumeiya.info",
+    "http://localhost:5500",     // ローカルで file サーバーとか使うなら
+    "http://127.0.0.1:5500",
+  ];
+
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  // ★ プリフライト（OPTIONS）はここで終了
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
   // メソッドチェック
   if (req.method !== "POST") {
-    res.setHeader("Allow", "POST");
+    res.setHeader("Allow", "POST, OPTIONS");
     return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
     const { items } = req.body || {};
 
-    // items が正しく来ているかチェック
     if (!items || !Array.isArray(items) || items.length === 0) {
       console.error("❌ items が空 or 不正: ", req.body);
       return res.status(400).json({ error: "No items in cart" });
     }
 
-    // Junさんの cart.js 仕様:
-    // { id, name, price, qty } が入っている前提で Stripe の line_items を組み立てる
     const line_items = items.map((item) => {
       const unitAmount = Number(item.price) || 0;
       const quantity = Number(item.qty) || 1;
@@ -34,7 +48,6 @@ module.exports = async (req, res) => {
           product_data: {
             name: item.name || "ランプ",
           },
-          // Stripe は「最小通貨単位（= 円ならそのまま整数）」で指定
           unit_amount: unitAmount,
         },
         quantity,
@@ -57,3 +70,4 @@ module.exports = async (req, res) => {
     return res.status(500).json({ error: "Internal server error" });
   }
 };
+
