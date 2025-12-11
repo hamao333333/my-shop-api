@@ -2,6 +2,9 @@
 
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
+// 一律送料（テスト用）：10円
+const SHIPPING_FEE = 10;
+
 module.exports = async (req, res) => {
   // ★ 許可したいオリジンを列挙
   const allowedOrigins = [
@@ -38,6 +41,7 @@ module.exports = async (req, res) => {
       return res.status(400).json({ error: "No items in cart" });
     }
 
+    // 商品の line items
     const line_items = items.map((item) => {
       const unitAmount = Number(item.price) || 0;
       const quantity = Number(item.qty) || 1;
@@ -48,10 +52,22 @@ module.exports = async (req, res) => {
           product_data: {
             name: item.name || "ランプ",
           },
-          unit_amount: unitAmount,
+          unit_amount: unitAmount, // 円単位
         },
         quantity,
       };
+    });
+
+    // 🔹ここで送料を1行追加（10円）
+    line_items.push({
+      price_data: {
+        currency: "jpy",
+        product_data: {
+          name: "送料",
+        },
+        unit_amount: SHIPPING_FEE, // 10円
+      },
+      quantity: 1,
     });
 
     console.log("✅ line_items:", line_items);
@@ -70,4 +86,3 @@ module.exports = async (req, res) => {
     return res.status(500).json({ error: "Internal server error" });
   }
 };
-
