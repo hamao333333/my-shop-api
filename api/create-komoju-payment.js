@@ -118,7 +118,7 @@ module.exports = async (req, res) => {
     currency: "JPY",
     return_url: returnUrl,
     default_locale: "ja",
-    payment_methods: [paymentType],
+    payment_methods: paymentType,
     "customer[email]": email || undefined,
     "customer[phone]": phone || undefined,
     external_order_num: orderId,
@@ -157,5 +157,6 @@ module.exports = async (req, res) => {
     return json(res, 502, { error: "Network error", detail: String(e?.message || e) });
   }
 };
+
 
 
