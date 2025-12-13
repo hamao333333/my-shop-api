@@ -114,16 +114,19 @@ module.exports = async (req, res) => {
     `&order_id=${encodeURIComponent(orderId)}`;
 
   const form = buildFormBody({
-    amount,
-    currency: "JPY",
-    return_url: returnUrl,
-    default_locale: "ja",
-    payment_methods: paymentType,
-    "customer[email]": email || undefined,
-    "customer[phone]": phone || undefined,
-    external_order_num: orderId,
-    "metadata[customer_name]": name || undefined,
-  });
+  amount,
+  currency: "JPY",
+  return_url: returnUrl,
+  default_locale: "ja",
+
+  // ★ここが最重要：一覧を出したくないなら 1個だけ
+  payment_types: [paymentType],
+
+  "customer[email]": email || undefined,
+  "customer[phone]": phone || undefined,
+  external_order_num: orderId,
+});
+
 
   try {
     const r = await fetch("https://komoju.com/api/v1/sessions", {
@@ -157,6 +160,7 @@ module.exports = async (req, res) => {
     return json(res, 502, { error: "Network error", detail: String(e?.message || e) });
   }
 };
+
 
 
 
