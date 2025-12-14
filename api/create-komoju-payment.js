@@ -118,15 +118,19 @@ module.exports = async function handler(req, res) {
       amount: Math.round(amount),
       currency: "JPY",
       // KOMOJUはこのキー名が安定（payment_methods[]）
-     const komojuMethod =
-  paymentMethod === "paypay" ? "paypay_online" :
-  paymentMethod === "rakutenpay" ? "rakuten_pay" :
-  null;
+    // ★ 支払い方法マッピング（KOMOJU正式コード）
+const komojuMethod =
+  paymentMethod === "paypay"
+    ? "paypay_online"
+    : paymentMethod === "rakutenpay"
+    ? "rakuten_pay"
+    : null;
 
 if (!komojuMethod) {
   return res.status(400).json({ ok: false, error: "Invalid paymentMethod" });
 }
 
+// ★ KOMOJU 送信用フォーム（ここだけでOK）
 const form = {
   amount: Math.round(amount),
   currency: "JPY",
@@ -153,6 +157,7 @@ const form = {
     return res.status(502).json({ ok: false, error: "Failed to create payment page", detail: String(e.message || e) });
   }
 };
+
 
 
 
