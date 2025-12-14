@@ -72,13 +72,16 @@ module.exports = async (req, res) => {
 
     console.log("✅ line_items:", line_items);
 
-    const session = await stripe.checkout.sessions.create({
-      mode: "payment",
-      payment_method_types: ["card"],
-      line_items,
-      success_url: "https://shoumeiya.info/success.html",
-      cancel_url: "https://shoumeiya.info/cancel.html",
-    });
+   const session = await stripe.checkout.sessions.create({
+  mode: "payment",
+  payment_method_types: ["card"],
+  line_items,
+  metadata: {
+    shop: "Jun Lamp Studio",
+  },
+  success_url: "https://shoumeiya.info/success.html",
+  cancel_url: "https://shoumeiya.info/cancel.html",
+});
 
     return res.status(200).json({ url: session.url });
   } catch (err) {
@@ -86,3 +89,4 @@ module.exports = async (req, res) => {
     return res.status(500).json({ error: "Internal server error" });
   }
 };
+
