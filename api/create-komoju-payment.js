@@ -156,9 +156,7 @@ module.exports = async function handler(req, res) {
   // ★ payment_types を外す
 };
 
-    console.log("KOMOJU session payload:", JSON.stringify(sessionReq, null, 2));
-
-
+  console.error("KOMOJU session payload:", JSON.stringify(sessionReq, null, 2));
 
     const session = await komojuCreateSession(sessionReq, apiKey);
 
@@ -183,6 +181,7 @@ module.exports = async function handler(req, res) {
     });
   }
 };
+
 
 
 
