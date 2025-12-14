@@ -1,6 +1,5 @@
-// api/create-komoju-payment.js (CommonJS / Vercel)
+// api/create-komoju-payment.js (CommonJS / Vercel)  --- Session方式（Hosted Page）
 const https = require("https");
-const querystring = require("querystring");
 const { sendCustomerMail, sendAdminMail } = require("../lib/sendMail");
 
 function setCors(req, res) {
@@ -26,8 +25,8 @@ function readJson(req) {
   });
 }
 
-function komojuCreatePayment(formObj, apiKey) {
-  const postData = querystring.stringify(formObj);
+function komojuCreateSession(jsonObj, apiKey) {
+  const postData = JSON.stringify(jsonObj);
   const auth = Buffer.from(`${apiKey}:`).toString("base64");
 
   return new Promise((resolve, reject) => {
@@ -35,10 +34,11 @@ function komojuCreatePayment(formObj, apiKey) {
       {
         method: "POST",
         hostname: "komoju.com",
-        path: "/api/v1/payments",
+        path: "/api/v1/sessions",
         headers: {
           Authorization: `Basic ${auth}`,
-          "Content-Type": "application/x-www-form-urlencoded",
+          "Content-Type": "application/json",
+          Accept: "application/json",
           "Content-Length": Buffer.byteLength(postData),
         },
       },
@@ -54,7 +54,14 @@ function komojuCreatePayment(formObj, apiKey) {
               resolve({});
             }
           } else {
-            reject(new Error(`KOMOJU ${res.statusCode}: ${data}`));
+            // 400でも本文が空のことがあるので、status/headers/lenも出す
+            const info = {
+              status: res.statusCode,
+              len: data.length,
+              headers: res.headers,
+              body: data,
+            };
+            reject(new Error(`KOMOJU session error: ${JSON.stringify(info)}`));
           }
         });
       }
@@ -77,10 +84,9 @@ module.exports = async function handler(req, res) {
   try {
     const body = await readJson(req);
 
-    // checkout.html から { customer, items, paymentMethod } を送る想定
     const customer = body.customer || {};
     const items = Array.isArray(body.items) ? body.items : [];
-    const paymentMethod = body.paymentMethod; // "paypay" or "rakutenpay"
+    const paymentMethod = body.paymentMethod; // "paypay" or "rakutenpay"（フロント側の値）
 
     const email = (customer.email || "").trim();
     const name = (customer.name || "").trim();
@@ -92,29 +98,15 @@ module.exports = async function handler(req, res) {
       return res.status(400).json({ ok: false, error: "Invalid paymentMethod" });
     }
 
-    // ★KOMOJUの正式コードへマッピング
-    const komojuMethod =
-      paymentMethod === "paypay" ? "paypay_online" :
-      paymentMethod === "rakutenpay" ? "rakuten_pay" :
-      null;
-
-    if (!komojuMethod) {
-      return res.status(400).json({ ok: false, error: "Invalid paymentMethod" });
-    }
+    // KOMOJUの payment type slug（公式スラッグ）
+    // paypay / rakutenpay が正しい
+    const komojuPaymentType = paymentMethod === "paypay" ? "paypay" : "rakutenpay";
 
     const orderId = "JL" + Date.now();
+    const amount = items.reduce((s, i) => s + Number(i.price || 0) * Number(i.qty || 0), 0);
+    if (!amount || amount <= 0) return res.status(400).json({ ok: false, error: "Invalid amount" });
 
-    const amount = items.reduce((s, i) => {
-      const price = Number(i.price || 0);
-      const qty = Number(i.qty || 0);
-      return s + price * qty;
-    }, 0);
-
-    if (!amount || amount <= 0) {
-      return res.status(400).json({ ok: false, error: "Invalid amount" });
-    }
-
-    // ★正解①：決済ページへ飛ばす前に「受付メール」
+    // ★正解①：決済前に「受付メール」を送る
     await sendCustomerMail({
       to: email,
       subject: "【ご注文受付】Jun Lamp Studio",
@@ -127,46 +119,50 @@ module.exports = async function handler(req, res) {
       `,
     });
 
-    // 管理者にも受付通知（任意）
     await sendAdminMail({
       subject: `【受付】KOMOJU決済開始 / ${orderId}`,
-      html: `<p>order:${orderId}</p><p>email:${email}</p><p>method:${paymentMethod}</p><p>amount:${amount}</p>`,
+      html: `<p>order:${orderId}</p><p>email:${email}</p><p>type:${komojuPaymentType}</p><p>amount:${amount}</p>`,
     });
 
     const apiKey = process.env.KOMOJU_SECRET_KEY;
-    if (!apiKey) {
-      return res.status(500).json({ ok: false, error: "Missing KOMOJU_SECRET_KEY" });
-    }
+    if (!apiKey) return res.status(500).json({ ok: false, error: "Missing KOMOJU_SECRET_KEY" });
 
-    // KOMOJU 送信用フォーム
-    const form = {
+    // Hosted Page の正攻法：Sessionを作って session_url に飛ばす
+    const sessionReq = {
       amount: Math.round(amount),
       currency: "JPY",
-      "payment_methods[]": komojuMethod,
+      return_url: "https://shoumeiya.info/success-komoju.html", // ここに ?session_id=... が付いて戻る
       external_order_num: orderId,
-      return_url: "https://shoumeiya.info/success-komoju.html",
-      cancel_url: "https://shoumeiya.info/cancel.html",
-      "customer[email]": email,
-      "customer[name]": name || undefined,
-      "customer[phone]": phone || undefined,
+      customer_email: email, // 推奨：なければ決済画面で入力させる
+      payment_types: [komojuPaymentType], // paypay / rakutenpay のみ表示したい場合
+      // customer_name などが使えるかはアカウント設定/仕様で差があるので必須にしない
     };
 
-    const created = await komojuCreatePayment(form, apiKey);
+    const session = await komojuCreateSession(sessionReq, apiKey);
 
-    const paymentUrl = created.payment_url || created.redirect_url || created.url;
-    if (!paymentUrl) {
-      console.error("KOMOJU create payment response:", created);
-      return res.status(500).json({ ok: false, error: "No payment_url returned" });
+    const sessionUrl = session.session_url;
+    if (!sessionUrl) {
+      console.error("KOMOJU session response:", session);
+      return res.status(500).json({ ok: false, error: "No session_url returned" });
     }
 
-    return res.status(200).json({ ok: true, redirect_url: paymentUrl, order_id: orderId });
+    return res.status(200).json({
+      ok: true,
+      redirect_url: sessionUrl,
+      order_id: orderId,
+      session_id: session.id,
+    });
   } catch (e) {
     console.error("create-komoju-payment error:", e);
-    return res
-      .status(502)
-      .json({ ok: false, error: "Failed to create payment page", detail: String(e.message || e) });
+    return res.status(502).json({
+      ok: false,
+      error: "Failed to create KOMOJU session",
+      detail: String(e.message || e),
+    });
   }
 };
+
+
 
 
 
