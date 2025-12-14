@@ -93,7 +93,7 @@ module.exports = async function handler(req, res) {
 
     const customer = body.customer || {};
     const items = Array.isArray(body.items) ? body.items : [];
-    const paymentMethod = body.paymentMethod; // "paypay" | "rakutenpay"
+    const paymentMethod = body.payment_type;
 
     const email = (customer.email || "").trim();
     const name = (customer.name || "").trim();
@@ -180,3 +180,4 @@ module.exports = async function handler(req, res) {
     });
   }
 };
+
