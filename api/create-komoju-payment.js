@@ -129,14 +129,14 @@ module.exports = async function handler(req, res) {
 
     // Hosted Page の正攻法：Sessionを作って session_url に飛ばす
     const sessionReq = {
-      amount: Math.round(amount),
-      currency: "JPY",
-      return_url: "https://shoumeiya.info/success-komoju.html", // ここに ?session_id=... が付いて戻る
-      external_order_num: orderId,
-      customer_email: email, // 推奨：なければ決済画面で入力させる
-      payment_types: [komojuPaymentType], // paypay / rakutenpay のみ表示したい場合
-      // customer_name などが使えるかはアカウント設定/仕様で差があるので必須にしない
-    };
+  amount: Math.round(amount),
+  currency: "JPY",
+  return_url: "https://shoumeiya.info/success-komoju.html",
+  external_order_num: orderId,
+  customer_email: email,
+  // ★ payment_types を外す
+};
+
 
     const session = await komojuCreateSession(sessionReq, apiKey);
 
@@ -161,6 +161,7 @@ module.exports = async function handler(req, res) {
     });
   }
 };
+
 
 
 
