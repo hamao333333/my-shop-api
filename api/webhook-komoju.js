@@ -48,7 +48,7 @@ module.exports = async function handler(req, res) {
     if (event.type === "payment.captured" || event.type === "payment.authorized") {
       const payment = event.data || {};
       const orderId = payment.external_order_num || payment.id || "(no id)";
-      const email = payment.customer?.emaila;
+      const email = payment.customer?.email;
 
       const method = payment.payment_method || "(unknown)";
       console.log("KOMOJU orderId:", orderId, "email:", email, "method:", method);
@@ -77,6 +77,7 @@ module.exports = async function handler(req, res) {
     return res.status(500).send("Server error");
   }
 };
+
 
 
 
