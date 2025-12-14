@@ -124,6 +124,7 @@ module.exports = async (req, res) => {
 
   "customer[email]": email || undefined,
   "customer[phone]": phone || undefined,
+  "customer[name]": name || undefined,
   external_order_num: orderId,
 });
 
@@ -160,6 +161,7 @@ module.exports = async (req, res) => {
     return json(res, 502, { error: "Network error", detail: String(e?.message || e) });
   }
 };
+
 
 
 
