@@ -1,4 +1,23 @@
 // api/create-komoju-payment.js (CommonJS / Vercel)  --- Session方式（Hosted Page）
+module.exports = async function handler(req, res) {
+  console.error("=== HIT create-komoju-payment ===", req.method, new Date().toISOString());
+
+  setCors(req, res);
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Method Not Allowed" });
+
+  let body;
+  try {
+    body = await readJson(req);
+    console.error("BODY keys:", Object.keys(body || {}));
+  } catch (e) {
+    console.error("JSON parse error:", e);
+    return res.status(400).json({ ok: false, error: "Invalid JSON" });
+  }
+
+  // ここに続く…
+
+
 const https = require("https");
 const { sendCustomerMail, sendAdminMail } = require("../lib/sendMail");
 
@@ -164,6 +183,7 @@ module.exports = async function handler(req, res) {
     });
   }
 };
+
 
 
 
