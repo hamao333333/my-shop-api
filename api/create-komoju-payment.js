@@ -62,9 +62,7 @@ function createKomojuSession(payload, apiKey) {
             }
           } else {
             reject(
-              new Error(
-                `KOMOJU ${res.statusCode}: ${buf || "(empty body)"}`
-              )
+              new Error(`KOMOJU ${res.statusCode}: ${buf || "(empty body)"}`)
             );
           }
         });
@@ -93,7 +91,9 @@ module.exports = async function handler(req, res) {
 
     const customer = body.customer || {};
     const items = Array.isArray(body.items) ? body.items : [];
-    const paymentMethod = body.payment_type;
+
+    // フロントから来る支払い種別
+    const paymentMethod = body.payment_type || body.paymentMethod;
 
     const email = (customer.email || "").trim();
     const name = (customer.name || "").trim();
@@ -105,15 +105,23 @@ module.exports = async function handler(req, res) {
       return res.status(400).json({ ok: false, error: "No items" });
     }
 
+    // ★KOMOJU正式 payment_types 対応表
     const komojuType =
       paymentMethod === "paypay"
         ? "paypay"
         : paymentMethod === "rakutenpay"
         ? "rakutenpay"
+        : paymentMethod === "konbini"
+        ? "konbini"
         : null;
 
     if (!komojuType) {
-      return res.status(400).json({ ok: false, error: "Invalid paymentMethod" });
+      return res.status(400).json({
+        ok: false,
+        error: "Invalid paymentMethod",
+        got: paymentMethod,
+        expected: ["paypay", "rakutenpay", "konbini"],
+      });
     }
 
     const orderId = "JL" + Date.now();
@@ -126,7 +134,7 @@ module.exports = async function handler(req, res) {
       return res.status(400).json({ ok: false, error: "Invalid amount" });
     }
 
-    // ① 受付メール（決済前）
+    // ① 決済前に受付メール
     await sendCustomerMail({
       to: email,
       subject: "【ご注文受付】Jun Lamp Studio",
@@ -141,12 +149,14 @@ module.exports = async function handler(req, res) {
 
     await sendAdminMail({
       subject: `【受付】KOMOJU / ${orderId}`,
-      html: `<p>${email}</p><p>${amount}円</p>`,
+      html: `<p>${email}</p><p>${amount}円</p><p>method:${komojuType}</p>`,
     });
 
     const apiKey = process.env.KOMOJU_SECRET_KEY;
     if (!apiKey) {
-      return res.status(500).json({ ok: false, error: "Missing KOMOJU_SECRET_KEY" });
+      return res
+        .status(500)
+        .json({ ok: false, error: "Missing KOMOJU_SECRET_KEY" });
     }
 
     const sessionPayload = {
