@@ -49,30 +49,9 @@ module.exports = async function handler(req, res) {
   }
 
   // 4) 支払い確定系
-  if (type === "payment.captured" || type === "payment.authorized") {
-    try {
-      const payment = event.data || {};
-      const paymentId = payment.id;
-      const orderId = payment.external_order_num || paymentId || "(no id)";
-      const method = payment.payment_method || "(unknown)";
-
-      // (A) まずイベント内から拾う
-      let email =
-        payment?.customer?.email ||
-        payment?.customer_email ||
-        payment?.email ||
-        "";
-
-      // (B) 無ければ KOMOJU API で支払い詳細を引いて拾う
-      if (!email && paymentId) {
-        const full = await fetchKomojuPayment(paymentId);
-        email =
-          full?.customer?.email ||
-          full?.customer_email ||
-          full?.email ||
-          "";
-        console.log("Fetched payment detail email:", email || "(none)");
-      }
+  if (event.type === "payment.captured") {
+  const payment = event.data;
+  const orderId = payment.external_order_num || payment.id;
 
       // 管理者メールは必ず送る（状況が分かるように）
       await sendAdminMail({
@@ -146,6 +125,7 @@ function fetchKomojuPayment(paymentId) {
     req.end();
   });
 }
+
 
 
 
