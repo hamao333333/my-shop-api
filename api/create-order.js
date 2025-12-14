@@ -1,6 +1,5 @@
 // api/create-order.js (CommonJS / Vercel)
-const { sendCustomerMail, sendAdminMail } = require("./lib/sendMail");
-
+const { sendCustomerMail, sendAdminMail } = require("../lib/sendMail");
 function setCors(req, res) {
   // ★あなたの本番フロントに合わせる（www有無も一致）
   const ORIGIN = "https://shoumeiya.info";
@@ -105,6 +104,7 @@ module.exports = async function handler(req, res) {
 };
 
   res.status(200).json({ ok: true });
+
 
 
 
