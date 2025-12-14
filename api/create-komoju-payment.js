@@ -59,6 +59,7 @@ function komojuCreatePayment(formObj, apiKey) {
         });
       }
     );
+
     r.on("error", reject);
     r.write(postData);
     r.end();
@@ -67,13 +68,16 @@ function komojuCreatePayment(formObj, apiKey) {
 
 module.exports = async function handler(req, res) {
   setCors(req, res);
+
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Method Not Allowed" });
+  if (req.method !== "POST") {
+    return res.status(405).json({ ok: false, error: "Method Not Allowed" });
+  }
 
   try {
     const body = await readJson(req);
 
-    // checkout.html から { customer, items, paymentMethod } を送っている想定
+    // checkout.html から { customer, items, paymentMethod } を送る想定
     const customer = body.customer || {};
     const items = Array.isArray(body.items) ? body.items : [];
     const paymentMethod = body.paymentMethod; // "paypay" or "rakutenpay"
@@ -84,13 +88,31 @@ module.exports = async function handler(req, res) {
 
     if (!email) return res.status(400).json({ ok: false, error: "Missing customer.email" });
     if (!items.length) return res.status(400).json({ ok: false, error: "Missing items" });
-    if (!["paypay", "rakutenpay"].includes(paymentMethod))
+    if (!["paypay", "rakutenpay"].includes(paymentMethod)) {
       return res.status(400).json({ ok: false, error: "Invalid paymentMethod" });
+    }
+
+    // ★KOMOJUの正式コードへマッピング
+    const komojuMethod =
+      paymentMethod === "paypay" ? "paypay_online" :
+      paymentMethod === "rakutenpay" ? "rakuten_pay" :
+      null;
+
+    if (!komojuMethod) {
+      return res.status(400).json({ ok: false, error: "Invalid paymentMethod" });
+    }
 
     const orderId = "JL" + Date.now();
-    const amount = items.reduce((s, i) => s + Number(i.price || 0) * Number(i.qty || 0), 0);
 
-    if (!amount || amount <= 0) return res.status(400).json({ ok: false, error: "Invalid amount" });
+    const amount = items.reduce((s, i) => {
+      const price = Number(i.price || 0);
+      const qty = Number(i.qty || 0);
+      return s + price * qty;
+    }, 0);
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ ok: false, error: "Invalid amount" });
+    }
 
     // ★正解①：決済ページへ飛ばす前に「受付メール」
     await sendCustomerMail({
@@ -112,36 +134,22 @@ module.exports = async function handler(req, res) {
     });
 
     const apiKey = process.env.KOMOJU_SECRET_KEY;
-    if (!apiKey) return res.status(500).json({ ok: false, error: "Missing KOMOJU_SECRET_KEY" });
+    if (!apiKey) {
+      return res.status(500).json({ ok: false, error: "Missing KOMOJU_SECRET_KEY" });
+    }
 
+    // KOMOJU 送信用フォーム
     const form = {
       amount: Math.round(amount),
       currency: "JPY",
-      // KOMOJUはこのキー名が安定（payment_methods[]）
-    // ★ 支払い方法マッピング（KOMOJU正式コード）
-const komojuMethod =
-  paymentMethod === "paypay"
-    ? "paypay_online"
-    : paymentMethod === "rakutenpay"
-    ? "rakuten_pay"
-    : null;
-
-if (!komojuMethod) {
-  return res.status(400).json({ ok: false, error: "Invalid paymentMethod" });
-}
-
-// ★ KOMOJU 送信用フォーム（ここだけでOK）
-const form = {
-  amount: Math.round(amount),
-  currency: "JPY",
-  "payment_methods[]": komojuMethod,
-  external_order_num: orderId,
-  return_url: "https://shoumeiya.info/success-komoju.html",
-  cancel_url: "https://shoumeiya.info/cancel.html",
-  "customer[email]": email,
-  "customer[name]": name || undefined,
-  "customer[phone]": phone || undefined,
-};
+      "payment_methods[]": komojuMethod,
+      external_order_num: orderId,
+      return_url: "https://shoumeiya.info/success-komoju.html",
+      cancel_url: "https://shoumeiya.info/cancel.html",
+      "customer[email]": email,
+      "customer[name]": name || undefined,
+      "customer[phone]": phone || undefined,
+    };
 
     const created = await komojuCreatePayment(form, apiKey);
 
@@ -154,10 +162,11 @@ const form = {
     return res.status(200).json({ ok: true, redirect_url: paymentUrl, order_id: orderId });
   } catch (e) {
     console.error("create-komoju-payment error:", e);
-    return res.status(502).json({ ok: false, error: "Failed to create payment page", detail: String(e.message || e) });
+    return res
+      .status(502)
+      .json({ ok: false, error: "Failed to create payment page", detail: String(e.message || e) });
   }
 };
-
 
 
 
