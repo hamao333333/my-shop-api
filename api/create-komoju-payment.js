@@ -118,14 +118,26 @@ module.exports = async function handler(req, res) {
       amount: Math.round(amount),
       currency: "JPY",
       // KOMOJUはこのキー名が安定（payment_methods[]）
-      "payment_methods[]": paymentMethod,
-      external_order_num: orderId,
-      return_url: "https://shoumeiya.info/success-komoju.html",
-      cancel_url: "https://shoumeiya.info/cancel.html",
-      "customer[email]": email,
-      "customer[name]": name || undefined,
-      "customer[phone]": phone || undefined,
-    };
+     const komojuMethod =
+  paymentMethod === "paypay" ? "paypay_online" :
+  paymentMethod === "rakutenpay" ? "rakuten_pay" :
+  null;
+
+if (!komojuMethod) {
+  return res.status(400).json({ ok: false, error: "Invalid paymentMethod" });
+}
+
+const form = {
+  amount: Math.round(amount),
+  currency: "JPY",
+  "payment_methods[]": komojuMethod,
+  external_order_num: orderId,
+  return_url: "https://shoumeiya.info/success-komoju.html",
+  cancel_url: "https://shoumeiya.info/cancel.html",
+  "customer[email]": email,
+  "customer[name]": name || undefined,
+  "customer[phone]": phone || undefined,
+};
 
     const created = await komojuCreatePayment(form, apiKey);
 
@@ -141,6 +153,7 @@ module.exports = async function handler(req, res) {
     return res.status(502).json({ ok: false, error: "Failed to create payment page", detail: String(e.message || e) });
   }
 };
+
 
 
 
