@@ -1,167 +1,148 @@
 // api/create-komoju-payment.js
-// Vercel Serverless Function (Node.js / CommonJS)
+const https = require("https");
+const { sendCustomerMail, sendAdminMail } = require("../lib/sendMail");
 
-function json(res, status, data) {
-  res.statusCode = status;
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.end(JSON.stringify(data));
-}
-
-function setCors(req, res) {
-  // 必要ならここをあなたのドメインに固定してOK
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+module.exports = async function handler(req, res) {
+  // CORS（必要に応じて調整）
+  const allowedOrigins = [
+    "https://shoumeiya.info",
+    "https://www.shoumeiya.info",
+  ];
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-}
 
-function safeStr(v, max = 255) {
-  const s = String(v ?? "").trim();
-  return s.length > max ? s.slice(0, max) : s;
-}
-
-function sumCart(items) {
-  let total = 0;
-  for (const it of items || []) {
-    const price = Number(it?.price);
-    const qty = Number(it?.qty);
-    if (!Number.isFinite(price) || !Number.isFinite(qty)) return null;
-    if (price < 0 || qty <= 0) return null;
-    total += price * qty;
-  }
-  return total;
-}
-
-function makeOrderId() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  const ss = String(d.getSeconds()).padStart(2, "0");
-  const rand = Math.random().toString(36).slice(2, 6).toUpperCase();
-  return `JL-${y}${m}${day}-${hh}${mm}${ss}-${rand}`;
-}
-
-function buildFormBody(obj) {
-  const p = new URLSearchParams();
-  for (const [k, v] of Object.entries(obj)) {
-    if (v === undefined || v === null || v === "") continue;
-    if (Array.isArray(v)) {
-      for (const x of v) p.append(`${k}[]`, String(x));
-    } else {
-      p.append(k, String(v));
-    }
-  }
-  return p.toString();
-}
-
-module.exports = async (req, res) => {
-  setCors(req, res);
-
-  // preflight
   if (req.method === "OPTIONS") {
-    res.statusCode = 204;
-    return res.end();
+    return res.status(200).end();
   }
-
   if (req.method !== "POST") {
-    res.setHeader("Allow", "POST, OPTIONS");
-    return json(res, 405, { error: "Method Not Allowed" });
+    return res.status(405).json({ error: "Method not allowed" });
   }
-
-  const KOMOJU_SECRET_KEY = process.env.KOMOJU_SECRET_KEY;
-  const SITE_BASE_URL = process.env.SITE_BASE_URL;
-
-  if (!KOMOJU_SECRET_KEY || !SITE_BASE_URL) {
-    return json(res, 500, {
-      error: "Server misconfigured",
-      detail: "KOMOJU_SECRET_KEY and SITE_BASE_URL are required.",
-    });
-  }
-
-  let body = req.body;
-  if (typeof body === "string") {
-    try { body = JSON.parse(body); } catch { body = null; }
-  }
-  if (!body) return json(res, 400, { error: "Invalid JSON body" });
-
-  const paymentType = String(body?.payment_type || "").toLowerCase();
-  const allowed = new Set(["paypay", "rakutenpay", "konbini"]);
-  if (!allowed.has(paymentType)) {
-    return json(res, 400, { error: "Invalid payment_type" });
-  }
-
-  const items = Array.isArray(body?.items) ? body.items : [];
-  const rawTotal = sumCart(items);
-  if (rawTotal === null) return json(res, 400, { error: "Invalid items" });
-
-  const amount = Math.round(rawTotal);
-  if (!amount || amount <= 0) return json(res, 400, { error: "Invalid amount" });
-
-  const customer = body?.customer || {};
-  const email = safeStr(customer?.email, 255);
-  const phone = safeStr(customer?.phone, 50);
-  const name = safeStr(customer?.name, 100);
-
-  const orderId = safeStr(body?.order_id || makeOrderId(), 255);
-  const base = SITE_BASE_URL.replace(/\/$/, "");
-
-  // KOMOJUは return_url に ?action=complete|cancel を付けて戻します
-  const returnUrl =
-    `${base}/success-komoju.html` +
-    `?payment_type=${encodeURIComponent(paymentType)}` +
-    `&order_id=${encodeURIComponent(orderId)}`;
-
-  const form = buildFormBody({
-  amount,
-  currency: "JPY",
-  return_url: returnUrl,
-  default_locale: "ja",
-
-  // ★ここが最重要：一覧を出したくないなら 1個だけ
-  payment_types: [paymentType],
-
-  "customer[email]": email || undefined,
-  "customer[phone]": phone || undefined,
-  "customer[name]": name || undefined,
-  external_order_num: orderId,
-});
-
 
   try {
-    const r = await fetch("https://komoju.com/api/v1/sessions", {
-      method: "POST",
-      headers: {
-        Authorization: "Basic " + Buffer.from(`${KOMOJU_SECRET_KEY}:`).toString("base64"),
-        "Content-Type": "application/x-www-form-urlencoded",
+    const {
+      email,
+      name,
+      phone,
+      items,
+      paymentMethod, // "paypay" | "rakutenpay"
+    } = req.body || {};
+
+    if (!email || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: "Invalid request" });
+    }
+
+    // 注文番号
+    const orderId = "JL" + Date.now();
+
+    // 金額計算
+    const amount = items.reduce(
+      (sum, i) => sum + Number(i.price) * Number(i.qty),
+      0
+    );
+
+    // ===============================
+    // ★ ここが正解①の核心
+    // 決済前にお客様へ「受付メール」を送る
+    // ===============================
+    await sendCustomerMail({
+      to: email,
+      subject: "【ご注文受付】Jun Lamp Studio",
+      html: `
+        <p>${name || ""} 様</p>
+        <p>ご注文ありがとうございます。</p>
+        <p>ただいまご注文を受け付けました。</p>
+        <p>このあと決済画面へ移動します。</p>
+        <hr>
+        <p><strong>注文番号：</strong>${orderId}</p>
+        <p><strong>ご注文内容：</strong></p>
+        <ul>
+          ${items
+            .map(
+              (i) =>
+                `<li>${i.name} ×${i.qty}（${Number(i.price).toLocaleString()}円）</li>`
+            )
+            .join("")}
+        </ul>
+        <p><strong>合計：</strong>${amount.toLocaleString()}円</p>
+        <p style="margin-top:16px;">
+          ※ 決済が完了しましたら、管理者側で確認後に発送準備に入ります。
+        </p>
+      `,
+    });
+
+    // 管理者にも「受付」通知（任意だが便利）
+    await sendAdminMail({
+      subject: `【注文受付】KOMOJU決済開始 / ${orderId}`,
+      html: `
+        <p>注文番号：${orderId}</p>
+        <p>お客様Email：${email}</p>
+        <p>支払い方法：${paymentMethod}</p>
+        <p>合計：${amount.toLocaleString()}円</p>
+      `,
+    });
+
+    // ===============================
+    // KOMOJU 決済作成
+    // ===============================
+    const payload = JSON.stringify({
+      amount,
+      currency: "JPY",
+      payment_methods:
+        paymentMethod === "paypay" ? ["paypay"] : ["rakutenpay"],
+      external_order_num: orderId,
+      customer: {
+        email,
+        name,
+        phone,
       },
-      body: form,
+      return_url: "https://shoumeiya.info/success.html",
+      cancel_url: "https://shoumeiya.info/cancel.html",
     });
 
-    const text = await r.text();
-    let data;
-    try { data = JSON.parse(text); } catch { data = { raw: text }; }
+    const apiKey = process.env.KOMOJU_SECRET_KEY;
+    const auth = Buffer.from(`${apiKey}:`).toString("base64");
 
-    if (!r.ok) {
-      return json(res, 502, { error: "KOMOJU session create failed", status: r.status, data });
-    }
+    const komoReq = https.request(
+      {
+        method: "POST",
+        hostname: "komoju.com",
+        path: "/api/v1/payments",
+        headers: {
+          Authorization: `Basic ${auth}`,
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+        },
+      },
+      (r) => {
+        let data = "";
+        r.on("data", (c) => (data += c));
+        r.on("end", () => {
+          if (r.statusCode >= 200 && r.statusCode < 300) {
+            const json = JSON.parse(data);
+            return res.status(200).json({ url: json.payment_url });
+          }
+          console.error("KOMOJU error:", data);
+          return res.status(500).json({ error: "KOMOJU error" });
+        });
+      }
+    );
 
-    const sessionUrl = data?.session_url;
-    if (!sessionUrl) {
-      return json(res, 502, { error: "No session_url returned", data });
-    }
-
-    return json(res, 200, {
-      redirect_url: sessionUrl,
-      order_id: orderId,
-      payment_type: paymentType,
+    komoReq.on("error", (e) => {
+      console.error(e);
+      res.status(500).json({ error: "Request failed" });
     });
+
+    komoReq.write(payload);
+    komoReq.end();
   } catch (e) {
-    return json(res, 502, { error: "Network error", detail: String(e?.message || e) });
+    console.error("create-komoju-payment error:", e);
+    return res.status(500).json({ error: "Server error" });
   }
 };
-
 
 
 
