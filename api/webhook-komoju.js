@@ -2,7 +2,7 @@
 const crypto = require("crypto");
 const { sendCustomerMail, sendAdminMail } = require("../lib/sendMail");
 
-// raw body 必須
+// raw body 必須（署名検証のため）
 module.exports.config = {
   api: { bodyParser: false },
 };
@@ -20,13 +20,17 @@ module.exports = async function handler(req, res) {
   if (!secret) return res.status(500).send("Missing KOMOJU_WEBHOOK_SECRET");
   if (!signature) return res.status(400).send("Missing X-Komoju-Signature");
 
-  const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(rawBody)
+    .digest("hex");
+
   if (signature !== expected) {
     console.error("❌ Invalid signature");
     return res.status(400).send("Invalid signature");
   }
 
-  // 3) JSON parse（★先に宣言してから代入）
+  // 3) JSON parse（先に宣言してから代入）
   let event;
   try {
     event = JSON.parse(rawBody);
@@ -35,7 +39,6 @@ module.exports = async function handler(req, res) {
     return res.status(400).send("Invalid JSON");
   }
 
-  // ★ ここから先だけ event を使う（初期化前参照を防ぐ）
   console.log("KOMOJU EVENT TYPE:", event?.type);
 
   try {
@@ -44,22 +47,52 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, pong: true });
     }
 
-    // captured / authorized 両対応（取りこぼし防止）
+    // captured / authorized 両対応
     if (event.type === "payment.captured" || event.type === "payment.authorized") {
       const payment = event.data || {};
       const orderId = payment.external_order_num || payment.id || "(no id)";
-      const email = payment.customer?.email;
-
       const method = payment.payment_method || "(unknown)";
-      console.log("KOMOJU orderId:", orderId, "email:", email, "method:", method);
 
-      // 管理者メールは必ず送る（emailが無くても状況が分かる）
+      // email の場所がケースで揺れるので候補を全部拾う（空文字は除外）
+      const emailCandidates = {
+        "payment.customer.email": payment?.customer?.email,
+        "payment.customer_email": payment?.customer_email,
+        "payment.email": payment?.email,
+        "payment.billing_address.email": payment?.billing_address?.email,
+        "payment.customer.billing_address.email": payment?.customer?.billing_address?.email,
+        "payment.customer.address.email": payment?.customer?.address?.email,
+        "payment.order.customer.email": payment?.order?.customer?.email,
+        "payment.order.customer_email": payment?.order?.customer_email,
+      };
+
+      const pickFirstEmail = (obj) => {
+        for (const k of Object.keys(obj)) {
+          const v = obj[k];
+          if (typeof v === "string" && v.trim()) return v.trim();
+        }
+        return "";
+      };
+
+      const email = pickFirstEmail(emailCandidates);
+
+      console.log("KOMOJU orderId:", orderId, "method:", method, "email:", email || "(none)");
+      console.log("EMAIL CANDIDATES:", emailCandidates);
+
+      // 管理者メール（必ず送る）
       await sendAdminMail({
         subject: `【KOMOJU】${event.type} / ${orderId}`,
-        html: `<p>type:${event.type}</p><p>order:${orderId}</p><p>method:${method}</p><p>email:${email || "(none)"}</p>`,
+        html: `
+          <p>type:${event.type}</p>
+          <p>order:${orderId}</p>
+          <p>method:${method}</p>
+          <p>email:${email || "(none)"}</p>
+          <hr>
+          <p><b>email candidates</b></p>
+          <pre style="white-space:pre-wrap">${escapeHtml(JSON.stringify(emailCandidates, null, 2))}</pre>
+        `,
       });
 
-      // 購入者メールは email があるときだけ
+      // 購入者メール（email が取れたときだけ）
       if (email) {
         await sendCustomerMail({
           to: email,
@@ -67,7 +100,7 @@ module.exports = async function handler(req, res) {
           html: `<p>お支払いを確認しました。</p><p>注文番号：<strong>${orderId}</strong></p>`,
         });
       } else {
-        console.log("No customer email in payload -> skip customer mail");
+        console.log("No customer email in webhook payload -> skip customer mail");
       }
     }
 
@@ -77,6 +110,16 @@ module.exports = async function handler(req, res) {
     return res.status(500).send("Server error");
   }
 };
+
+// 管理者メール本文に JSON を載せるので、最低限のエスケープ
+function escapeHtml(s) {
+  return String(s)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
 
 
 
