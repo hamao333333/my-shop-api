@@ -1,34 +1,21 @@
-// api/create-komoju-payment.js (CommonJS / Vercel)  --- Session方式（Hosted Page）
-module.exports = async function handler(req, res) {
-  console.error("=== HIT create-komoju-payment ===", req.method, new Date().toISOString());
-
-  setCors(req, res);
-  if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Method Not Allowed" });
-
-  let body;
-  try {
-    body = await readJson(req);
-    console.error("BODY keys:", Object.keys(body || {}));
-  } catch (e) {
-    console.error("JSON parse error:", e);
-    return res.status(400).json({ ok: false, error: "Invalid JSON" });
-  }
-
-  // ここに続く…
-
+// api/create-komoju-payment.js
+// CommonJS / Vercel
 
 const https = require("https");
 const { sendCustomerMail, sendAdminMail } = require("../lib/sendMail");
 
+/* ---------------- CORS ---------------- */
 function setCors(req, res) {
   const allowed = ["https://shoumeiya.info", "https://www.shoumeiya.info"];
   const origin = req.headers.origin;
-  if (allowed.includes(origin)) res.setHeader("Access-Control-Allow-Origin", origin);
+  if (allowed.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
+/* ------------- JSON reader ------------- */
 function readJson(req) {
   return new Promise((resolve, reject) => {
     let body = "";
@@ -44,8 +31,9 @@ function readJson(req) {
   });
 }
 
-function komojuCreateSession(jsonObj, apiKey) {
-  const postData = JSON.stringify(jsonObj);
+/* -------- KOMOJU Session API -------- */
+function createKomojuSession(payload, apiKey) {
+  const data = JSON.stringify(payload);
   const auth = Buffer.from(`${apiKey}:`).toString("base64");
 
   return new Promise((resolve, reject) => {
@@ -58,40 +46,37 @@ function komojuCreateSession(jsonObj, apiKey) {
           Authorization: `Basic ${auth}`,
           "Content-Type": "application/json",
           Accept: "application/json",
-          "Content-Length": Buffer.byteLength(postData),
+          "Content-Length": Buffer.byteLength(data),
         },
       },
       (res) => {
-        let data = "";
+        let buf = "";
         res.setEncoding("utf8");
-        res.on("data", (c) => (data += c));
+        res.on("data", (c) => (buf += c));
         res.on("end", () => {
           if (res.statusCode >= 200 && res.statusCode < 300) {
             try {
-              resolve(JSON.parse(data));
+              resolve(JSON.parse(buf));
             } catch {
               resolve({});
             }
           } else {
-            // 400でも本文が空のことがあるので、status/headers/lenも出す
-            const info = {
-              status: res.statusCode,
-              len: data.length,
-              headers: res.headers,
-              body: data,
-            };
-            reject(new Error(`KOMOJU session error: ${JSON.stringify(info)}`));
+            reject(
+              new Error(
+                `KOMOJU ${res.statusCode}: ${buf || "(empty body)"}`
+              )
+            );
           }
         });
       }
     );
-
     r.on("error", reject);
-    r.write(postData);
+    r.write(data);
     r.end();
   });
 }
 
+/* --------------- handler --------------- */
 module.exports = async function handler(req, res) {
   setCors(req, res);
 
@@ -101,31 +86,47 @@ module.exports = async function handler(req, res) {
   }
 
   try {
+    console.error("=== HIT create-komoju-payment ===");
+
     const body = await readJson(req);
+    console.error("BODY:", body);
 
     const customer = body.customer || {};
     const items = Array.isArray(body.items) ? body.items : [];
-    const paymentMethod = body.paymentMethod; // "paypay" or "rakutenpay"（フロント側の値）
+    const paymentMethod = body.paymentMethod; // "paypay" | "rakutenpay"
 
     const email = (customer.email || "").trim();
     const name = (customer.name || "").trim();
-    const phone = (customer.tel || customer.phone || "").trim();
 
-    if (!email) return res.status(400).json({ ok: false, error: "Missing customer.email" });
-    if (!items.length) return res.status(400).json({ ok: false, error: "Missing items" });
-    if (!["paypay", "rakutenpay"].includes(paymentMethod)) {
+    if (!email) {
+      return res.status(400).json({ ok: false, error: "Missing email" });
+    }
+    if (!items.length) {
+      return res.status(400).json({ ok: false, error: "No items" });
+    }
+
+    const komojuType =
+      paymentMethod === "paypay"
+        ? "paypay"
+        : paymentMethod === "rakutenpay"
+        ? "rakutenpay"
+        : null;
+
+    if (!komojuType) {
       return res.status(400).json({ ok: false, error: "Invalid paymentMethod" });
     }
 
-    // KOMOJUの payment type slug（公式スラッグ）
-    // paypay / rakutenpay が正しい
-    const komojuPaymentType = paymentMethod === "paypay" ? "paypay" : "rakutenpay";
-
     const orderId = "JL" + Date.now();
-    const amount = items.reduce((s, i) => s + Number(i.price || 0) * Number(i.qty || 0), 0);
-    if (!amount || amount <= 0) return res.status(400).json({ ok: false, error: "Invalid amount" });
+    const amount = items.reduce(
+      (s, i) => s + Number(i.price || 0) * Number(i.qty || 0),
+      0
+    );
 
-    // ★正解①：決済前に「受付メール」を送る
+    if (amount <= 0) {
+      return res.status(400).json({ ok: false, error: "Invalid amount" });
+    }
+
+    // ① 受付メール（決済前）
     await sendCustomerMail({
       to: email,
       subject: "【ご注文受付】Jun Lamp Studio",
@@ -134,62 +135,48 @@ module.exports = async function handler(req, res) {
         <p>ご注文を受け付けました。</p>
         <p>このあと決済画面へ移動します。</p>
         <p>注文番号：<strong>${orderId}</strong></p>
-        <p>合計：<strong>${Number(amount).toLocaleString()}円</strong></p>
+        <p>合計：<strong>${amount.toLocaleString()}円</strong></p>
       `,
     });
 
     await sendAdminMail({
-      subject: `【受付】KOMOJU決済開始 / ${orderId}`,
-      html: `<p>order:${orderId}</p><p>email:${email}</p><p>type:${komojuPaymentType}</p><p>amount:${amount}</p>`,
+      subject: `【受付】KOMOJU / ${orderId}`,
+      html: `<p>${email}</p><p>${amount}円</p>`,
     });
 
     const apiKey = process.env.KOMOJU_SECRET_KEY;
-    if (!apiKey) return res.status(500).json({ ok: false, error: "Missing KOMOJU_SECRET_KEY" });
+    if (!apiKey) {
+      return res.status(500).json({ ok: false, error: "Missing KOMOJU_SECRET_KEY" });
+    }
 
-    // Hosted Page の正攻法：Sessionを作って session_url に飛ばす
-    const sessionReq = {
-  amount: Math.round(amount),
-  currency: "JPY",
-  return_url: "https://shoumeiya.info/success-komoju.html",
-  external_order_num: orderId,
-  customer_email: email,
-  // ★ payment_types を外す
-};
+    const sessionPayload = {
+      amount: Math.round(amount),
+      currency: "JPY",
+      return_url: "https://shoumeiya.info/success-komoju.html",
+      external_order_num: orderId,
+      customer_email: email,
+      payment_types: [komojuType],
+    };
 
-  console.error("KOMOJU session payload:", JSON.stringify(sessionReq, null, 2));
+    console.error("KOMOJU session payload:", sessionPayload);
 
-    const session = await komojuCreateSession(sessionReq, apiKey);
+    const session = await createKomojuSession(sessionPayload, apiKey);
 
-    const sessionUrl = session.session_url;
-    if (!sessionUrl) {
-      console.error("KOMOJU session response:", session);
-      return res.status(500).json({ ok: false, error: "No session_url returned" });
+    if (!session.session_url) {
+      return res.status(500).json({ ok: false, error: "No session_url" });
     }
 
     return res.status(200).json({
       ok: true,
-      redirect_url: sessionUrl,
+      redirect_url: session.session_url,
       order_id: orderId,
-      session_id: session.id,
     });
   } catch (e) {
-    console.error("create-komoju-payment error:", e);
-    return res.status(502).json({
+    console.error("create-komoju-payment ERROR:", e);
+    return res.status(500).json({
       ok: false,
-      error: "Failed to create KOMOJU session",
+      error: "Server error",
       detail: String(e.message || e),
     });
   }
 };
-
-
-
-
-
-
-
-
-
-
-
-
