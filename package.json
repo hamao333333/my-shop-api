@@ -2,8 +2,9 @@
   "name": "my-shop-api",
   "version": "1.0.0",
   "dependencies": {
-    "stripe": "^16.0.0"
+    "stripe": "^16.0.0",
     "resend": "^4.0.0"
   }
 }
+
 
