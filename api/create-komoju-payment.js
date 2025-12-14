@@ -162,7 +162,8 @@ module.exports = async function handler(req, res) {
     const sessionPayload = {
       amount: Math.round(amount),
       currency: "JPY",
-      return_url: "https://shoumeiya.info/success-komoju.html",
+      return_url: `https://shoumeiya.info/success-komoju.html?payment_type=${encodeURIComponent(komojuType)}&order_id=${encodeURIComponent(orderId)}`,
+      
       external_order_num: orderId,
       customer_email: email,
       payment_types: [komojuType],
@@ -190,4 +191,5 @@ module.exports = async function handler(req, res) {
     });
   }
 };
+
 
