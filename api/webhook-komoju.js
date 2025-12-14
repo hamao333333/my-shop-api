@@ -16,6 +16,11 @@ module.exports = async function handler(req, res) {
   // 2) 署名検証
   const secret = process.env.KOMOJU_WEBHOOK_SECRET || "";
   const signature = req.headers["x-komoju-signature"]; // X-Komoju-Signature :contentReference[oaicite:4]{index=4}
+  console.log("KOMOJU EVENT TYPE:", event?.type);
+console.log("KOMOJU EVENT DATA keys:", Object.keys(event?.data || {}));
+console.log("KOMOJU CUSTOMER:", event?.data?.customer);
+console.log("KOMOJU PAYMENT_METHOD:", event?.data?.payment_method);
+
 
   if (!secret) {
     console.error("❌ Missing KOMOJU_WEBHOOK_SECRET");
@@ -70,5 +75,6 @@ module.exports = async function handler(req, res) {
     return res.status(500).send("Server error");
   }
 };
+
 
 
