@@ -1,19 +1,12 @@
-// api/create-order.js (CommonJS / Vercel)
+// api/create-order.js
 const { sendCustomerMail, sendAdminMail } = require("../lib/sendMail");
-function setCors(req, res) {
-  // ★あなたの本番フロントに合わせる（www有無も一致）
-  const ORIGIN = "https://shoumeiya.info";
-
-  res.setHeader("Access-Control-Allow-Origin", ORIGIN);
-  res.setHeader("Vary", "Origin");
-  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-}
 
 module.exports = async function handler(req, res) {
-  setCors(req, res);
+  // ---- CORS ----
+  res.setHeader("Access-Control-Allow-Origin", "https://shoumeiya.info");
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  // Preflight
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
@@ -23,87 +16,70 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const body = req.body || {};
-    const orderId = body.orderId;
-    const paymentMethod = body.paymentMethod; // "bank" or "cod"
-    const customer = body.customer;
-    const items = body.items;
+    const { orderId, paymentMethod, customer, items } = req.body || {};
 
-    // ---- 最低限のバリデーション ----
-    if (!orderId || typeof orderId !== "string") {
+    // ---- validation ----
+    if (!orderId) {
       return res.status(400).json({ ok: false, error: "Missing orderId" });
     }
-    if (paymentMethod !== "bank" && paymentMethod !== "cod") {
+    if (!["bank", "cod"].includes(paymentMethod)) {
       return res.status(400).json({ ok: false, error: "Invalid paymentMethod" });
     }
-    if (!customer || typeof customer !== "object") {
-      return res.status(400).json({ ok: false, error: "Missing customer" });
-    }
-    if (!customer.email || typeof customer.email !== "string") {
+    if (!customer?.email) {
       return res.status(400).json({ ok: false, error: "Missing customer.email" });
     }
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ ok: false, error: "Missing items" });
     }
 
-    // ---- メール本文（ここは好きに整形OK）----
+    // ---- mail body ----
     const payLabel = paymentMethod === "bank" ? "銀行振込" : "代金引換";
 
     const lines = items
-      .map((it) => {
-        const name = String(it.name ?? "");
-        const qty = Number(it.qty ?? 0);
-        const price = Number(it.price ?? 0);
-        return `・${name} ×${qty} / ${price}円`;
-      })
+      .map(
+        (i) => `・${i.name} ×${i.qty} / ${Number(i.price).toLocaleString()}円`
+      )
       .join("<br>");
 
     const adminHtml = `
-      <h2>新規注文（${payLabel}）</h2>
-      <p><b>注文番号:</b> ${orderId}</p>
-      <p><b>お客様:</b> ${customer.name ?? ""}</p>
-      <p><b>Email:</b> ${customer.email}</p>
-      <p><b>住所:</b> ${customer.address ?? ""}</p>
-      <p><b>電話:</b> ${customer.tel ?? ""}</p>
+      <h3>新規注文（${payLabel}）</h3>
+      <p>注文番号：${orderId}</p>
+      <p>氏名：${customer.name || ""}</p>
+      <p>Email：${customer.email}</p>
+      <p>電話：${customer.tel || ""}</p>
+      <p>住所：${customer.address || ""}</p>
       <hr>
-      <p><b>注文内容</b><br>${lines}</p>
-      <p><b>備考</b><br>${customer.note ?? ""}</p>
+      ${lines}
+      <p>備考：${customer.note || ""}</p>
     `;
 
     const customerHtml = `
-      <p>${customer.name ?? ""} 様</p>
-      <p>ご注文ありがとうございます（${payLabel}）。</p>
-      <p><b>注文番号:</b> ${orderId}</p>
+      <p>${customer.name || ""} 様</p>
+      <p>ご注文ありがとうございます。</p>
+      <p>注文番号：${orderId}</p>
       <hr>
-      <p><b>ご注文内容</b><br>${lines}</p>
-      <p>このメールは自動送信です。</p>
+      ${lines}
     `;
 
-    // ---- sendMail.js の関数仕様に合わせて呼ぶ ----
-    const adminResult = await sendAdminMail({
+    // ---- send ----
+    await sendAdminMail({
       subject: `【新規注文】${payLabel} / ${orderId}`,
       html: adminHtml,
     });
 
-    const customerResult = await sendCustomerMail({
+    await sendCustomerMail({
       to: customer.email,
       subject: `ご注文ありがとうございます / ${orderId}`,
       html: customerHtml,
     });
 
-    return res.status(200).json({
-      ok: true,
-      orderId,
-      adminMailId: adminResult?.data?.id ?? null,
-      customerMailId: customerResult?.data?.id ?? null,
-    });
-  } catch (e) {
-    console.error("create-order error:", e);
+    return res.status(200).json({ ok: true, orderId });
+  } catch (err) {
+    console.error("create-order error:", err);
     return res.status(500).json({ ok: false, error: "Server error" });
   }
 };
 
-  res.status(200).json({ ok: true });
 
 
 
