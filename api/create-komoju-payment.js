@@ -1,38 +1,29 @@
 // api/create-komoju-payment.js
-// CommonJS / Vercel
-
 const https = require("https");
 const { sendCustomerMail, sendAdminMail } = require("../lib/sendMail");
 
-/* ---------------- CORS ---------------- */
+/* ---------- CORS ---------- */
 function setCors(req, res) {
   const allowed = ["https://shoumeiya.info", "https://www.shoumeiya.info"];
-  const origin = req.headers.origin;
-  if (allowed.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
+  if (allowed.includes(req.headers.origin)) {
+    res.setHeader("Access-Control-Allow-Origin", req.headers.origin);
   }
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
-/* ------------- JSON reader ------------- */
+/* ---------- JSON ---------- */
 function readJson(req) {
   return new Promise((resolve, reject) => {
     let body = "";
     req.on("data", (c) => (body += c));
-    req.on("end", () => {
-      try {
-        resolve(body ? JSON.parse(body) : {});
-      } catch (e) {
-        reject(e);
-      }
-    });
+    req.on("end", () => resolve(JSON.parse(body || "{}")));
     req.on("error", reject);
   });
 }
 
-/* -------- KOMOJU Session API -------- */
-function createKomojuSession(payload, apiKey) {
+/* ---------- KOMOJU ---------- */
+function createSession(payload, apiKey) {
   const data = JSON.stringify(payload);
   const auth = Buffer.from(`${apiKey}:`).toString("base64");
 
@@ -45,84 +36,34 @@ function createKomojuSession(payload, apiKey) {
         headers: {
           Authorization: `Basic ${auth}`,
           "Content-Type": "application/json",
-          Accept: "application/json",
           "Content-Length": Buffer.byteLength(data),
         },
       },
       (res) => {
         let buf = "";
-        res.setEncoding("utf8");
         res.on("data", (c) => (buf += c));
         res.on("end", () => {
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            try {
-              resolve(JSON.parse(buf));
-            } catch {
-              resolve({});
-            }
-          } else {
-            reject(
-              new Error(`KOMOJU ${res.statusCode}: ${buf || "(empty body)"}`)
-            );
-          }
+          res.statusCode >= 200 && res.statusCode < 300
+            ? resolve(JSON.parse(buf))
+            : reject(new Error(buf));
         });
       }
     );
-    r.on("error", reject);
     r.write(data);
     r.end();
   });
 }
 
-/* --------------- handler --------------- */
-module.exports = async function handler(req, res) {
+/* ---------- handler ---------- */
+module.exports = async (req, res) => {
   setCors(req, res);
-
-  if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") {
-    return res.status(405).json({ ok: false, error: "Method Not Allowed" });
-  }
+  if (req.method === "OPTIONS") return res.end();
+  if (req.method !== "POST") return res.status(405).end();
 
   try {
-    console.error("=== HIT create-komoju-payment ===");
-
     const body = await readJson(req);
-    console.error("BODY:", body);
-
     const customer = body.customer || {};
-    const items = Array.isArray(body.items) ? body.items : [];
-
-    // フロントから来る支払い種別
-    const paymentMethod = body.payment_type || body.paymentMethod;
-
-    const email = (customer.email || "").trim();
-    const name = (customer.name || "").trim();
-
-    if (!email) {
-      return res.status(400).json({ ok: false, error: "Missing email" });
-    }
-    if (!items.length) {
-      return res.status(400).json({ ok: false, error: "No items" });
-    }
-
-    // ★KOMOJU正式 payment_types 対応表
-    const komojuType =
-      paymentMethod === "paypay"
-        ? "paypay"
-        : paymentMethod === "rakutenpay"
-        ? "rakutenpay"
-        : paymentMethod === "konbini"
-        ? "konbini"
-        : null;
-
-    if (!komojuType) {
-      return res.status(400).json({
-        ok: false,
-        error: "Invalid paymentMethod",
-        got: paymentMethod,
-        expected: ["paypay", "rakutenpay", "konbini"],
-      });
-    }
+    const items = body.items || [];
 
     const orderId = "JL" + Date.now();
     const amount = items.reduce(
@@ -130,66 +71,74 @@ module.exports = async function handler(req, res) {
       0
     );
 
-    if (amount <= 0) {
-      return res.status(400).json({ ok: false, error: "Invalid amount" });
-    }
+    const method =
+      body.payment_type === "paypay"
+        ? "paypay"
+        : body.payment_type === "rakutenpay"
+        ? "rakutenpay"
+        : body.payment_type === "konbini"
+        ? "konbini"
+        : null;
 
-    // ① 決済前に受付メール
-    await sendCustomerMail({
-      to: email,
-      subject: "【ご注文受付】Jun Lamp Studio",
-      html: `
-        <p>${name || ""} 様</p>
-        <p>ご注文を受け付けました。</p>
-        <p>決済画面にてお支払い手続きを進めてください。</p>
-        <p>支払いを確認後、発送手配に移ります。</p>
-        <p>注文番号：<strong>${orderId}</strong></p>
-        <p>合計：<strong>${amount.toLocaleString()}円</strong></p>
-      `,
-    });
+    if (!method) return res.status(400).json({ error: "invalid payment" });
+
+    /* ---------- 管理者メール（最重要） ---------- */
+    const itemLines = items
+      .map(
+        (i) =>
+          `・${i.name} ×${i.qty}（${i.price.toLocaleString()}円）`
+      )
+      .join("<br>");
 
     await sendAdminMail({
       subject: `【受付】KOMOJU / ${orderId}`,
-      html: `<p>${email}</p><p>${amount}円</p><p>method:${komojuType}</p>`,
+      html: `
+        <h3>購入者情報</h3>
+        <p>氏名：${customer.name}</p>
+        <p>カナ：${customer.nameKana}</p>
+        <p>メール：${customer.email}</p>
+        <p>電話：${customer.phone}</p>
+        <p>郵便：${customer.zip}</p>
+        <p>住所：${customer.address1} ${customer.address2}</p>
+        <p>配達時間：${customer.deliveryTime}</p>
+        <p>備考：${customer.notes}</p>
+        <hr>
+        <h3>明細</h3>
+        ${itemLines}
+        <p><strong>合計：${amount.toLocaleString()}円</strong></p>
+        <p>支払方法：${method}</p>
+      `,
     });
 
-    const apiKey = process.env.KOMOJU_SECRET_KEY;
-    if (!apiKey) {
-      return res
-        .status(500)
-        .json({ ok: false, error: "Missing KOMOJU_SECRET_KEY" });
-    }
-
-    const sessionPayload = {
-      amount: Math.round(amount),
-      currency: "JPY",
-      return_url: `https://shoumeiya.info/success-komoju.html?payment_type=${encodeURIComponent(komojuType)}&order_id=${encodeURIComponent(orderId)}`,
-      
-      external_order_num: orderId,
-      customer_email: email,
-      payment_types: [komojuType],
-    };
-
-    console.error("KOMOJU session payload:", sessionPayload);
-
-    const session = await createKomojuSession(sessionPayload, apiKey);
-
-    if (!session.session_url) {
-      return res.status(500).json({ ok: false, error: "No session_url" });
-    }
-
-    return res.status(200).json({
-      ok: true,
-      redirect_url: session.session_url,
-      order_id: orderId,
+    /* ---------- 顧客メール ---------- */
+    await sendCustomerMail({
+      to: customer.email,
+      subject: "【ご注文受付】Jun Lamp Studio",
+      html: `
+        <p>${customer.name} 様</p>
+        <p>ご注文を受け付けました。</p>
+        <p>注文番号：<strong>${orderId}</strong></p>
+        <p>合計：${amount.toLocaleString()}円</p>
+      `,
     });
+
+    /* ---------- KOMOJU ---------- */
+    const session = await createSession(
+      {
+        amount,
+        currency: "JPY",
+        customer_email: customer.email,
+        external_order_num: orderId,
+        payment_types: [method],
+        return_url: `https://shoumeiya.info/success-komoju.html?order_id=${orderId}`,
+      },
+      process.env.KOMOJU_SECRET_KEY
+    );
+
+    res.json({ ok: true, redirect_url: session.session_url });
   } catch (e) {
-    console.error("create-komoju-payment ERROR:", e);
-    return res.status(500).json({
-      ok: false,
-      error: "Server error",
-      detail: String(e.message || e),
-    });
+    console.error(e);
+    res.status(500).json({ error: "server error" });
   }
 };
 
