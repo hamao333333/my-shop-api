@@ -142,7 +142,7 @@ module.exports = async function handler(req, res) {
         <p>${name || ""} 様</p>
         <p>ご注文を受け付けました。</p>
         <p>決済画面にてお支払い手続きを進めてください。</p>
-        <p>支払いを確認後、発送手配します。</p>
+        <p>支払いを確認後、発送手配に移ります。</p>
         <p>注文番号：<strong>${orderId}</strong></p>
         <p>合計：<strong>${amount.toLocaleString()}円</strong></p>
       `,
@@ -192,6 +192,7 @@ module.exports = async function handler(req, res) {
     });
   }
 };
+
 
 
 
