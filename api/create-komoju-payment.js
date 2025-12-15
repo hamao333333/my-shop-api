@@ -133,7 +133,8 @@ const session = await createSession(
     external_order_num: orderId,
     payment_types: [method],
     // 仮（あとで差し替えるための最小値）
-    return_url: `https://shoumeiya.info/success-komoju.html?order_id=${encodeURIComponent(orderId)}`,
+    return_url: `https://shoumeiya.info/success-komoju.html?order_id=${encodeURIComponent(orderId)}&payment_type=${encodeURIComponent(method)}`,
+
   },
   process.env.KOMOJU_SECRET_KEY
 );
@@ -161,6 +162,7 @@ return res.status(200).json({
   // フロントが “支払い後の表示判定” で使えるよう渡す（任意）
   success_url: returnUrl,
 });
+
 
 
 
