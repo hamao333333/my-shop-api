@@ -5,8 +5,9 @@ const { sendCustomerMail, sendAdminMail } = require("../lib/sendMail");
 /* ---------- CORS ---------- */
 function setCors(req, res) {
   const allowed = ["https://shoumeiya.info", "https://www.shoumeiya.info"];
-  if (allowed.includes(req.headers.origin)) {
-    res.setHeader("Access-Control-Allow-Origin", req.headers.origin);
+  const origin = req.headers.origin;
+  if (allowed.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
   }
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -80,14 +81,13 @@ module.exports = async (req, res) => {
         ? "konbini"
         : null;
 
-    if (!method) return res.status(400).json({ error: "invalid payment" });
+    if (!method) {
+      return res.status(400).json({ ok: false, error: "invalid payment" });
+    }
 
-    /* ---------- 管理者メール（最重要） ---------- */
+    /* ---------- 管理者メール（受付） ---------- */
     const itemLines = items
-      .map(
-        (i) =>
-          `・${i.name} ×${i.qty}（${i.price.toLocaleString()}円）`
-      )
+      .map(i => `・${i.name} ×${i.qty}（${i.price.toLocaleString()}円）`)
       .join("<br>");
 
     await sendAdminMail({
@@ -122,46 +122,33 @@ module.exports = async (req, res) => {
       `,
     });
 
-   /* ---------- KOMOJU ---------- */
+    /* ---------- KOMOJU セッション ---------- */
+    const session = await createSession(
+      {
+        amount,
+        currency: "JPY",
+        customer_email: customer.email,
+        external_order_num: orderId,
+        payment_types: [method],
+        return_url:
+          `https://shoumeiya.info/success-komoju.html` +
+          `?order_id=${encodeURIComponent(orderId)}` +
+          `&payment_type=${encodeURIComponent(method)}`,
+      },
+      process.env.KOMOJU_SECRET_KEY
+    );
 
-// まず仮のreturn_urlでセッション作成（session_id を得るため）
-const session = await createSession(
-  {
-    amount,
-    currency: "JPY",
-    customer_email: customer.email,
-    external_order_num: orderId,
-    payment_types: [method],
-    // 仮（あとで差し替えるための最小値）
-    return_url: `https://shoumeiya.info/success-komoju.html?order_id=${encodeURIComponent(orderId)}&payment_type=${encodeURIComponent(method)}`,
+    return res.status(200).json({
+      ok: true,
+      redirect_url: session.session_url,
+      order_id: orderId,
+    });
+  } catch (e) {
+    console.error("create-komoju-payment error:", e);
+    return res.status(500).json({ ok: false, error: "server error" });
+  }
+};
 
-  },
-  process.env.KOMOJU_SECRET_KEY
-);
-
-if (!session || !session.session_url || !session.id) {
-  return res.status(500).json({ ok: false, error: "KOMOJU session invalid" });
-}
-
-// ✅ success-komoju.html が要求している session_id を必ず付ける
-const returnUrl =
-  `https://shoumeiya.info/success-komoju.html` +
-  `?order_id=${encodeURIComponent(orderId)}` +
-  `&payment_type=${encodeURIComponent(method)}` +
-  `&session_id=${encodeURIComponent(session.id)}`;
-
-// KOMOJUは「return_url をセッション作成後に更新」するAPIが無いので、
-// ここでは「ユーザーをreturn_url付きの session_url に送る」方式にする。
-// KOMOJUのsession_urlの後ろに return_url を付けるのではなく、
-// フロント側で success-komoju.html に遷移させて session_id で照会する。
-
-return res.status(200).json({
-  ok: true,
-  redirect_url: session.session_url,
-  order_id: orderId,
-  // フロントが “支払い後の表示判定” で使えるよう渡す（任意）
-  success_url: returnUrl,
-});
 
 
 
