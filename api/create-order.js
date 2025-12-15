@@ -1,5 +1,17 @@
 // api/create-order.js
-import { sendCustomerMail, sendAdminMail } from "./lib/sendMail";
+// CommonJS / Vercel
+const { sendCustomerMail, sendAdminMail } = require("../lib/sendMail");
+
+/* ---------------- CORS ---------------- */
+function setCors(req, res) {
+  const allowed = ["https://shoumeiya.info", "https://www.shoumeiya.info"];
+  const origin = req.headers.origin;
+  if (allowed.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
 
 function esc(s) {
   return String(s ?? "")
@@ -10,9 +22,11 @@ function esc(s) {
     .replaceAll("'", "&#39;");
 }
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
+  setCors(req, res);
+
+  if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") {
-    res.setHeader("Allow", "POST");
     return res.status(405).json({ ok: false, error: "Method Not Allowed" });
   }
 
@@ -24,7 +38,7 @@ export default async function handler(req, res) {
     if (!customer || !customer.email) return res.status(400).json({ ok: false, error: "Missing customer.email" });
     if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ ok: false, error: "No items" });
 
-    const shipping = 10; // checkout.html と合わせる（必要なら共通化）
+    const shipping = 10; // checkout.html と合わせる
     const itemsTotal = items.reduce(
       (s, i) => s + Number(i.price || 0) * Number(i.qty || 0),
       0
@@ -32,22 +46,43 @@ export default async function handler(req, res) {
     const total = itemsTotal + shipping;
 
     const pmLabel =
-      paymentMethod === "bank"
-        ? "銀行振込"
-        : paymentMethod === "cod"
-        ? "代金引換"
-        : paymentMethod;
+      paymentMethod === "bank" ? "銀行振込" :
+      paymentMethod === "cod" ? "代金引換" :
+      paymentMethod;
 
     const itemLines = items
       .map(
         (i) =>
-          `・${esc(i.name || "(item)")} ×${Number(i.qty || 0)}（単価 ${Number(
-            i.price || 0
-          ).toLocaleString()}円）`
+          `・${esc(i.name || "(item)")} ×${Number(i.qty || 0)}（単価 ${Number(i.price || 0).toLocaleString()}円）`
       )
       .join("<br>");
 
-    // 客向け
+    // 店舗向け（個人情報を全部入れる）
+    await sendAdminMail({
+      subject: `【新規注文】未入金（${pmLabel}）/ ${orderId}`,
+      html: `
+        <p>新しい注文がありました（未入金）。</p>
+        <p>注文番号：<strong>${esc(orderId)}</strong></p>
+        <p>支払い方法：<strong>${esc(pmLabel)}</strong></p>
+        <hr>
+        <h3>購入者情報</h3>
+        <p>氏名：${esc(customer.name || "")}</p>
+        <p>フリガナ：${esc(customer.nameKana || "")}</p>
+        <p>メール：${esc(customer.email || "")}</p>
+        <p>電話：${esc(customer.phone || "")}</p>
+        <p>郵便：${esc(customer.zip || "")}</p>
+        <p>住所：${esc([customer.address1, customer.address2].filter(Boolean).join(" "))}</p>
+        <p>配達時間：${esc(customer.deliveryTime || "")}</p>
+        <p>備考：${esc(customer.notes || "")}</p>
+        <hr>
+        <h3>明細</h3>
+        ${itemLines}
+        <p>送料：${shipping.toLocaleString()}円</p>
+        <p><strong>合計：${total.toLocaleString()}円</strong></p>
+      `,
+    });
+
+    // 客向け（注文確認）
     await sendCustomerMail({
       to: customer.email,
       subject: "【ご注文確認】Jun Lamp Studio",
@@ -64,36 +99,14 @@ export default async function handler(req, res) {
       `,
     });
 
-    // 店舗向け（★ここに個人情報を全部入れる）
-    await sendAdminMail({
-      subject: `【新規注文】未入金（${pmLabel}）/ ${orderId}`,
-      html: `
-        <p>新しい注文がありました（未入金）。</p>
-        <p>注文番号：<strong>${esc(orderId)}</strong></p>
-        <p>支払い方法：<strong>${esc(pmLabel)}</strong></p>
-        <hr>
-        <h3>購入者情報</h3>
-        <p>氏名：${esc(customer.name || "")}</p>
-        <p>メール：${esc(customer.email || "")}</p>
-        <p>電話：${esc(customer.phone || "")}</p>
-        <p>郵便：${esc(customer.zip || "")}</p>
-        <p>住所：${esc([customer.address1, customer.address2].filter(Boolean).join(" "))}</p>
-        <p>配達時間：${esc(customer.deliveryTime || "")}</p>
-        <p>備考：${esc(customer.notes || "")}</p>
-        <hr>
-        <h3>明細</h3>
-        ${itemLines}
-        <p>送料：${shipping.toLocaleString()}円</p>
-        <p><strong>合計：${total.toLocaleString()}円</strong></p>
-      `,
-    });
-
     return res.status(200).json({ ok: true });
   } catch (e) {
-    console.error("create-order error:", e);
-    return res.status(500).json({ ok: false, error: "Server error" });
+    console.error("create-order ERROR:", e);
+    return res.status(500).json({ ok: false, error: "Server error", detail: String(e.message || e) });
   }
-}
+};
+
+
 
 
 
