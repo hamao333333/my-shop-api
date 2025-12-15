@@ -56,6 +56,8 @@ module.exports = async function handler(req, res) {
     const customerHtml = `
       <p>${customer.name || ""} 様</p>
       <p>ご注文ありがとうございます。</p>
+      <p>指定された方法で、お支払い手続きをおねがいします。</p>
+      <p>ご入金の確認後に、随時発送手配します。</p>
       <p>注文番号：${orderId}</p>
       <hr>
       ${lines}
@@ -79,6 +81,7 @@ module.exports = async function handler(req, res) {
     return res.status(500).json({ ok: false, error: "Server error" });
   }
 };
+
 
 
 
