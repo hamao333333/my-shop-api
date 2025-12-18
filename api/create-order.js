@@ -2,39 +2,16 @@
 // CommonJS / Vercel
 const { sendCustomerMail, sendAdminMail } = require("../lib/sendMail");
 
-// ★追加：GAS在庫API（/exec） ※Stripe/KOMOJU と同じ
+// ★GAS在庫API（doGet）
 const GAS_STOCK_URL = process.env.GAS_STOCK_URL;
-
-async function getStock(productId) {
-  if (!GAS_STOCK_URL) throw new Error("GAS_STOCK_URL_NOT_SET");
-
-  const url = `${GAS_STOCK_URL}?product_id=${encodeURIComponent(productId)}`;
-  const r = await fetch(url, { method: "GET" });
-
-  // GASがHTML返す/失敗する場合もあるのでテキストで受けてからJSON化
-  const text = await r.text();
-
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new Error("STOCK_API_NON_JSON");
-  }
-
-  if (!data || data.ok !== true) {
-    throw new Error(data?.error ? `STOCK_API_${data.error}` : "STOCK_API_ERROR");
-  }
-
-  return Number(data.stock ?? 0);
-}
 
 /* ---------------- CORS ---------------- */
 function setCors(req, res) {
-  const allowed = ["https://shoumeiya.info", "https://www.shoumeiya.info"];
+  // ✅ 本番(独自ドメイン) + 開発(localhost) + プレビュー等でも動くように、来た Origin をそのまま返す
+  // - file:// などで Origin が無い場合は "*" にする
   const origin = req.headers.origin;
-  if (allowed.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-  }
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Origin", origin || "*");
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
@@ -46,6 +23,21 @@ function esc(s) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+
+// ★在庫取得（GAS doGet）
+async function getStock(productId) {
+  if (!GAS_STOCK_URL) throw new Error("GAS_STOCK_URL_NOT_SET");
+  const url = `${GAS_STOCK_URL}?product_id=${encodeURIComponent(productId)}`;
+  const r = await fetch(url, { method: "GET" });
+  const text = await r.text();
+  let data;
+  try { data = JSON.parse(text); } catch { throw new Error("STOCK_API_NON_JSON"); }
+  if (!data || data.ok !== true) {
+    throw new Error(data?.error ? `STOCK_API_${data.error}` : "STOCK_API_ERROR");
+  }
+  return Number(data.stock ?? 0);
 }
 
 module.exports = async function handler(req, res) {
@@ -64,38 +56,39 @@ module.exports = async function handler(req, res) {
     if (!customer || !customer.email) return res.status(400).json({ ok: false, error: "Missing customer.email" });
     if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ ok: false, error: "No items" });
 
-    // ★追加：在庫チェック（Stripe/KOMOJUと同じ：1つでも不足なら止める）
-    const cartItems = items
-      .map((i) => ({ id: i.id, qty: Number(i.qty || 0) }))
-      .filter((i) => i.id && i.qty > 0);
+// ★在庫チェック（1つでも不足なら止める：Stripeと同じ挙動）
+const cartItems = items
+  .map((i) => ({ id: i.id, qty: Number(i.qty || 0) }))
+  .filter((i) => i.id && i.qty > 0);
 
-    const out_of_stock = [];
-    const insufficient = [];
+const out_of_stock = [];
+const insufficient = [];
 
-    // 商品IDが重複してる可能性に備えて合算
-    const qtyById = new Map();
-    for (const it of cartItems) {
-      qtyById.set(it.id, (qtyById.get(it.id) || 0) + Number(it.qty || 0));
-    }
+// 商品IDが重複してる可能性に備えて合算
+const qtyById = new Map();
+for (const it of cartItems) {
+  qtyById.set(it.id, (qtyById.get(it.id) || 0) + Number(it.qty || 0));
+}
 
-    for (const [productId, needQty] of qtyById.entries()) {
-      const stock = await getStock(productId);
+for (const [productId, needQty] of qtyById.entries()) {
+  const stock = await getStock(productId);
 
-      if (stock <= 0) {
-        out_of_stock.push(productId);
-      } else if (needQty > stock) {
-        insufficient.push({ id: productId, need: needQty, have: stock });
-      }
-    }
+  if (stock <= 0) {
+    out_of_stock.push(productId);
+  } else if (needQty > stock) {
+    insufficient.push({ id: productId, need: needQty, have: stock });
+  }
+}
 
-    if (out_of_stock.length > 0 || insufficient.length > 0) {
-      return res.status(409).json({
-        ok: false,
-        error: "OUT_OF_STOCK",
-        out_of_stock,
-        insufficient,
-      });
-    }
+if (out_of_stock.length > 0 || insufficient.length > 0) {
+  return res.status(409).json({
+    ok: false,
+    error: "OUT_OF_STOCK",
+    out_of_stock,
+    insufficient,
+  });
+}
+
 
     const shipping = 10; // checkout.html と合わせる
     const itemsTotal = items.reduce(
@@ -161,19 +154,18 @@ module.exports = async function handler(req, res) {
     return res.status(200).json({ ok: true });
   } catch (e) {
     console.error("create-order ERROR:", e);
-
-    // ★追加：在庫API側の問題は「止める」けど理由を返す（運用で追える）
-    if (
-      String(e?.message || "").startsWith("GAS_STOCK_URL_NOT_SET") ||
-      String(e?.message || "").startsWith("STOCK_API_") ||
-      String(e?.message || "").startsWith("STOCK_API_NON_JSON")
-    ) {
-      return res.status(502).json({ ok: false, error: "STOCK_CHECK_FAILED" });
-    }
-
-    return res.status(500).json({ ok: false, error: "Server error", detail: String(e.message || e) });
+    const msg = String(e?.message || e);
+if (
+  msg.startsWith("GAS_STOCK_URL_NOT_SET") ||
+  msg.startsWith("STOCK_API_") ||
+  msg.startsWith("STOCK_API_NON_JSON")
+) {
+  return res.status(502).json({ ok: false, error: "STOCK_CHECK_FAILED", detail: msg });
+}
+return res.status(500).json({ ok: false, error: "Server error", detail: msg });
   }
 };
+
 
 
 
