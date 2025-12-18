@@ -53,6 +53,11 @@ module.exports = async (req, res) => {
     const c = customer || {};
     const orderId = "JL" + Date.now();
 
+
+    const cartItems = items
+      .map((i) => ({ id: i.id, qty: Number(i.qty || 0) }))
+      .filter((i) => i.id && i.qty > 0);
+
     // 合計（受付メール用）
     const itemsTotal = items.reduce(
       (s, i) => s + Number(i.price || 0) * Number(i.qty || 0),
@@ -136,6 +141,9 @@ module.exports = async (req, res) => {
       metadata: {
         shop: "Jun Lamp Studio",
         order_id: orderId,
+
+        // 在庫減算用（商品IDと数量）
+        cart_items: safe(JSON.stringify(cartItems)),
 
         name: safe(c.name),
         name_kana: safe(c.nameKana),
