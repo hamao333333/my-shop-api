@@ -2,7 +2,7 @@
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const { sendAdminMail } = require("../lib/sendMail");
 
-// ★追加：GAS在庫API（/exec）
+// ★追加：GAS在庫API（doGet用）
 const GAS_STOCK_URL = process.env.GAS_STOCK_URL;
 
 // 一律送料（テスト用）：10円
@@ -26,11 +26,10 @@ function safe(v, max = 450) {
 // ★追加：在庫取得（GAS doGet）
 async function getStock(productId) {
   if (!GAS_STOCK_URL) throw new Error("GAS_STOCK_URL_NOT_SET");
-
   const url = `${GAS_STOCK_URL}?product_id=${encodeURIComponent(productId)}`;
 
+  // Vercel(Node18+)ならfetchが使える
   const r = await fetch(url, { method: "GET" });
-  // GASがHTML返す/失敗する場合もあるのでテキストで受けてからJSON化
   const text = await r.text();
 
   let data;
@@ -40,10 +39,7 @@ async function getStock(productId) {
     throw new Error("STOCK_API_NON_JSON");
   }
 
-  if (!data || data.ok !== true) {
-    throw new Error(data?.error ? `STOCK_API_${data.error}` : "STOCK_API_ERROR");
-  }
-
+  if (!data?.ok) throw new Error(data?.error ? `STOCK_API_${data.error}` : "STOCK_API_ERROR");
   return Number(data.stock ?? 0);
 }
 
@@ -84,29 +80,23 @@ module.exports = async (req, res) => {
       .map((i) => ({ id: i.id, qty: Number(i.qty || 0) }))
       .filter((i) => i.id && i.qty > 0);
 
-    // ★追加：在庫チェック（パターン1：1つでも不足なら止める）
-    // - out_of_stock: stock <= 0 の商品
-    // - insufficient: qty > stock の商品
+    // =========================
+    // ★追加：在庫チェック（パターン1）
+    // =========================
     const out_of_stock = [];
     const insufficient = [];
 
-    // 商品IDが重複してる可能性に備えて合算
+    // id重複に備えて合算
     const qtyById = new Map();
-    for (const it of cartItems) {
-      qtyById.set(it.id, (qtyById.get(it.id) || 0) + Number(it.qty || 0));
-    }
+    for (const it of cartItems) qtyById.set(it.id, (qtyById.get(it.id) || 0) + it.qty);
 
     for (const [productId, needQty] of qtyById.entries()) {
       const stock = await getStock(productId);
-
-      if (stock <= 0) {
-        out_of_stock.push(productId);
-      } else if (needQty > stock) {
-        insufficient.push({ id: productId, need: needQty, have: stock });
-      }
+      if (stock <= 0) out_of_stock.push(productId);
+      else if (needQty > stock) insufficient.push({ id: productId, need: needQty, have: stock });
     }
 
-    if (out_of_stock.length > 0 || insufficient.length > 0) {
+    if (out_of_stock.length || insufficient.length) {
       return res.status(409).json({
         error: "OUT_OF_STOCK",
         out_of_stock,
@@ -121,8 +111,7 @@ module.exports = async (req, res) => {
     );
     const total = itemsTotal + SHIPPING_FEE;
 
-    // ✅ 受付（未決済）を管理者へ送る：KOMOJUと同じ挙動
-    // ※ユーザーが何度も「支払いへ進む」を押すと重複メールになる可能性あり
+    // ✅ 受付（未決済）を管理者へ送る（★ただし失敗しても決済は続ける）
     const itemLines = items
       .map(
         (i) =>
@@ -132,28 +121,32 @@ module.exports = async (req, res) => {
       )
       .join("<br>");
 
-    await sendAdminMail({
-      subject: `【受付】Stripe(未決済) / ${orderId}`,
-      html: `
-        <p>Stripe決済の受付（まだ支払い完了ではありません）</p>
-        <p>注文番号：<strong>${esc(orderId)}</strong></p>
-        <hr>
-        <h3>購入者情報（checkout.html入力）</h3>
-        <p>氏名：${esc(c.name || "")}</p>
-        <p>フリガナ：${esc(c.nameKana || "")}</p>
-        <p>メール：${esc(c.email || "")}</p>
-        <p>電話：${esc(c.phone || "")}</p>
-        <p>郵便：${esc(c.zip || "")}</p>
-        <p>住所：${esc([c.address1, c.address2].filter(Boolean).join(" "))}</p>
-        <p>配達時間：${esc(c.deliveryTime || "")}</p>
-        <p>備考：${esc(c.notes || "")}</p>
-        <hr>
-        <h3>明細</h3>
-        ${itemLines}
-        <p>送料：${SHIPPING_FEE.toLocaleString()}円</p>
-        <p><strong>合計：${total.toLocaleString()}円</strong></p>
-      `,
-    });
+    try {
+      await sendAdminMail({
+        subject: `【受付】Stripe(未決済) / ${orderId}`,
+        html: `
+          <p>Stripe決済の受付（まだ支払い完了ではありません）</p>
+          <p>注文番号：<strong>${esc(orderId)}</strong></p>
+          <hr>
+          <h3>購入者情報（checkout.html入力）</h3>
+          <p>氏名：${esc(c.name || "")}</p>
+          <p>フリガナ：${esc(c.nameKana || "")}</p>
+          <p>メール：${esc(c.email || "")}</p>
+          <p>電話：${esc(c.phone || "")}</p>
+          <p>郵便：${esc(c.zip || "")}</p>
+          <p>住所：${esc([c.address1, c.address2].filter(Boolean).join(" "))}</p>
+          <p>配達時間：${esc(c.deliveryTime || "")}</p>
+          <p>備考：${esc(c.notes || "")}</p>
+          <hr>
+          <h3>明細</h3>
+          ${itemLines}
+          <p>送料：${SHIPPING_FEE.toLocaleString()}円</p>
+          <p><strong>合計：${total.toLocaleString()}円</strong></p>
+        `,
+      });
+    } catch (mailErr) {
+      console.error("⚠️ sendAdminMail failed (continue checkout):", mailErr);
+    }
 
     // line items（Stripe用）
     const line_items = items.map((item) => {
@@ -193,12 +186,11 @@ module.exports = async (req, res) => {
 
       client_reference_id: orderId,
 
-      // ✅ 支払い完了後のWebhookでも個人情報を拾えるように保存
       metadata: {
         shop: "Jun Lamp Studio",
         order_id: orderId,
 
-        // 在庫減算用（商品IDと数量）
+        // 在庫減算用（Webhook側で使う）
         cart_items: safe(JSON.stringify(cartItems)),
 
         name: safe(c.name),
@@ -212,26 +204,19 @@ module.exports = async (req, res) => {
         notes: safe(c.notes),
       },
 
-      success_url: `https://shoumeiya.info/success.html?order_id=${encodeURIComponent(
-        orderId
-      )}`,
-      cancel_url: `https://shoumeiya.info/cancel.html?order_id=${encodeURIComponent(
-        orderId
-      )}`,
+      success_url: `https://shoumeiya.info/success.html?order_id=${encodeURIComponent(orderId)}`,
+      cancel_url: `https://shoumeiya.info/cancel.html?order_id=${encodeURIComponent(orderId)}`,
     });
 
     return res.status(200).json({ url: session.url });
   } catch (err) {
-    console.error("❌ Stripe エラー:", err);
+    console.error("❌ create-checkout-session error:", err);
 
-    // ★追加：在庫API側の問題は「止める」けど理由を返す（運用で追える）
-    if (
-      String(err?.message || "").startsWith("GAS_STOCK_URL_NOT_SET") ||
-      String(err?.message || "").startsWith("STOCK_API_") ||
-      String(err?.message || "").startsWith("STOCK_API_NON_JSON")
-    ) {
+    // 在庫チェック系は原因を分けて返す（フロントで文言を変えられる）
+    const msg = String(err?.message || "");
+    if (msg === "GAS_STOCK_URL_NOT_SET") return res.status(500).json({ error: "GAS_STOCK_URL_NOT_SET" });
+    if (msg.startsWith("STOCK_API_") || msg === "STOCK_API_NON_JSON")
       return res.status(502).json({ error: "STOCK_CHECK_FAILED" });
-    }
 
     return res.status(500).json({ error: "Internal server error" });
   }
