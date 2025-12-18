@@ -2,18 +2,39 @@
 // CommonJS / Vercel
 const { sendCustomerMail, sendAdminMail } = require("../lib/sendMail");
 
-// ★GAS在庫API（doGet）
-const GAS_STOCK_URL = process.env.GAS_STOCK_URL;
-
-/* ---------------- CORS ---------------- */
+/* ---------------- CORS ----------------
+  - 本番: shoumeiya.info / www
+  - 開発: localhost, 127.0.0.1
+  - Vercelプレビュー(フロントをVercelで見てる時): *.vercel.app を許可
+-------------------------------------- */
 function setCors(req, res) {
-  // ✅ 本番(独自ドメイン) + 開発(localhost) + プレビュー等でも動くように、来た Origin をそのまま返す
-  // - file:// などで Origin が無い場合は "*" にする
   const origin = req.headers.origin;
-  res.setHeader("Vary", "Origin");
-  res.setHeader("Access-Control-Allow-Origin", origin || "*");
+
+  const allowed = new Set([
+    "https://shoumeiya.info",
+    "https://www.shoumeiya.info",
+    "http://localhost:5500",
+    "http://127.0.0.1:5500",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+  ]);
+
+  // Origin がある場合：許可された Origin または *.vercel.app を許可
+  if (origin) {
+    const isVercelPreview = origin.endsWith(".vercel.app");
+    if (allowed.has(origin) || isVercelPreview) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+    }
+  } else {
+    // Origin が無い（同一オリジン/サーバーtoサーバー等）場合でも壊れないように
+    // ※ブラウザCORS用途ではなく、APIとしての堅牢性のため
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
+
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Max-Age", "86400");
 }
 
 function esc(s) {
@@ -25,25 +46,12 @@ function esc(s) {
     .replaceAll("'", "&#39;");
 }
 
-
-// ★在庫取得（GAS doGet）
-async function getStock(productId) {
-  if (!GAS_STOCK_URL) throw new Error("GAS_STOCK_URL_NOT_SET");
-  const url = `${GAS_STOCK_URL}?product_id=${encodeURIComponent(productId)}`;
-  const r = await fetch(url, { method: "GET" });
-  const text = await r.text();
-  let data;
-  try { data = JSON.parse(text); } catch { throw new Error("STOCK_API_NON_JSON"); }
-  if (!data || data.ok !== true) {
-    throw new Error(data?.error ? `STOCK_API_${data.error}` : "STOCK_API_ERROR");
-  }
-  return Number(data.stock ?? 0);
-}
-
 module.exports = async function handler(req, res) {
   setCors(req, res);
 
-  if (req.method === "OPTIONS") return res.status(200).end();
+  // preflight
+  if (req.method === "OPTIONS") return res.status(204).end();
+
   if (req.method !== "POST") {
     return res.status(405).json({ ok: false, error: "Method Not Allowed" });
   }
@@ -56,41 +64,7 @@ module.exports = async function handler(req, res) {
     if (!customer || !customer.email) return res.status(400).json({ ok: false, error: "Missing customer.email" });
     if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ ok: false, error: "No items" });
 
-// ★在庫チェック（1つでも不足なら止める：Stripeと同じ挙動）
-const cartItems = items
-  .map((i) => ({ id: i.id, qty: Number(i.qty || 0) }))
-  .filter((i) => i.id && i.qty > 0);
-
-const out_of_stock = [];
-const insufficient = [];
-
-// 商品IDが重複してる可能性に備えて合算
-const qtyById = new Map();
-for (const it of cartItems) {
-  qtyById.set(it.id, (qtyById.get(it.id) || 0) + Number(it.qty || 0));
-}
-
-for (const [productId, needQty] of qtyById.entries()) {
-  const stock = await getStock(productId);
-
-  if (stock <= 0) {
-    out_of_stock.push(productId);
-  } else if (needQty > stock) {
-    insufficient.push({ id: productId, need: needQty, have: stock });
-  }
-}
-
-if (out_of_stock.length > 0 || insufficient.length > 0) {
-  return res.status(409).json({
-    ok: false,
-    error: "OUT_OF_STOCK",
-    out_of_stock,
-    insufficient,
-  });
-}
-
-
-    const shipping = 10; // checkout.html と合わせる
+    const shipping = 10; // checkout.html と合わせる（必要なら後で1000に統一）
     const itemsTotal = items.reduce(
       (s, i) => s + Number(i.price || 0) * Number(i.qty || 0),
       0
@@ -154,17 +128,14 @@ if (out_of_stock.length > 0 || insufficient.length > 0) {
     return res.status(200).json({ ok: true });
   } catch (e) {
     console.error("create-order ERROR:", e);
-    const msg = String(e?.message || e);
-if (
-  msg.startsWith("GAS_STOCK_URL_NOT_SET") ||
-  msg.startsWith("STOCK_API_") ||
-  msg.startsWith("STOCK_API_NON_JSON")
-) {
-  return res.status(502).json({ ok: false, error: "STOCK_CHECK_FAILED", detail: msg });
-}
-return res.status(500).json({ ok: false, error: "Server error", detail: msg });
+    return res.status(500).json({
+      ok: false,
+      error: "Server error",
+      detail: String(e?.message || e),
+    });
   }
 };
+
 
 
 
