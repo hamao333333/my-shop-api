@@ -2,6 +2,9 @@
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const { sendAdminMail } = require("../lib/sendMail");
 
+// ★追加：GAS在庫API（/exec）
+const GAS_STOCK_URL = process.env.GAS_STOCK_URL;
+
 // 一律送料（テスト用）：10円
 const SHIPPING_FEE = 10;
 
@@ -18,6 +21,30 @@ function esc(s) {
 function safe(v, max = 450) {
   const s = String(v ?? "").trim();
   return s ? (s.length > max ? s.slice(0, max) : s) : undefined;
+}
+
+// ★追加：在庫取得（GAS doGet）
+async function getStock(productId) {
+  if (!GAS_STOCK_URL) throw new Error("GAS_STOCK_URL_NOT_SET");
+
+  const url = `${GAS_STOCK_URL}?product_id=${encodeURIComponent(productId)}`;
+
+  const r = await fetch(url, { method: "GET" });
+  // GASがHTML返す/失敗する場合もあるのでテキストで受けてからJSON化
+  const text = await r.text();
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error("STOCK_API_NON_JSON");
+  }
+
+  if (!data || data.ok !== true) {
+    throw new Error(data?.error ? `STOCK_API_${data.error}` : "STOCK_API_ERROR");
+  }
+
+  return Number(data.stock ?? 0);
 }
 
 module.exports = async (req, res) => {
@@ -53,10 +80,39 @@ module.exports = async (req, res) => {
     const c = customer || {};
     const orderId = "JL" + Date.now();
 
-
     const cartItems = items
       .map((i) => ({ id: i.id, qty: Number(i.qty || 0) }))
       .filter((i) => i.id && i.qty > 0);
+
+    // ★追加：在庫チェック（パターン1：1つでも不足なら止める）
+    // - out_of_stock: stock <= 0 の商品
+    // - insufficient: qty > stock の商品
+    const out_of_stock = [];
+    const insufficient = [];
+
+    // 商品IDが重複してる可能性に備えて合算
+    const qtyById = new Map();
+    for (const it of cartItems) {
+      qtyById.set(it.id, (qtyById.get(it.id) || 0) + Number(it.qty || 0));
+    }
+
+    for (const [productId, needQty] of qtyById.entries()) {
+      const stock = await getStock(productId);
+
+      if (stock <= 0) {
+        out_of_stock.push(productId);
+      } else if (needQty > stock) {
+        insufficient.push({ id: productId, need: needQty, have: stock });
+      }
+    }
+
+    if (out_of_stock.length > 0 || insufficient.length > 0) {
+      return res.status(409).json({
+        error: "OUT_OF_STOCK",
+        out_of_stock,
+        insufficient,
+      });
+    }
 
     // 合計（受付メール用）
     const itemsTotal = items.reduce(
@@ -167,6 +223,16 @@ module.exports = async (req, res) => {
     return res.status(200).json({ url: session.url });
   } catch (err) {
     console.error("❌ Stripe エラー:", err);
+
+    // ★追加：在庫API側の問題は「止める」けど理由を返す（運用で追える）
+    if (
+      String(err?.message || "").startsWith("GAS_STOCK_URL_NOT_SET") ||
+      String(err?.message || "").startsWith("STOCK_API_") ||
+      String(err?.message || "").startsWith("STOCK_API_NON_JSON")
+    ) {
+      return res.status(502).json({ error: "STOCK_CHECK_FAILED" });
+    }
+
     return res.status(500).json({ error: "Internal server error" });
   }
 };
