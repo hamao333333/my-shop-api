@@ -67,6 +67,11 @@ module.exports = async (req, res) => {
     const items = body.items || [];
 
     const orderId = "JL" + Date.now();
+
+    const cartItems = items
+      .map((i) => ({ id: i.id, qty: Number(i.qty || 0) }))
+      .filter((i) => i.id && i.qty > 0);
+
     const amount = items.reduce(
       (s, i) => s + Number(i.price || 0) * Number(i.qty || 0),
       0
@@ -130,6 +135,8 @@ module.exports = async (req, res) => {
         customer_email: customer.email,
         external_order_num: orderId,
         payment_types: [method],
+        // 在庫減算用（webhookで参照）
+        metadata: { cart_items: JSON.stringify(cartItems) },
         return_url:
           `https://shoumeiya.info/success-komoju.html` +
           `?order_id=${encodeURIComponent(orderId)}` +
