@@ -2,6 +2,23 @@
 const https = require("https");
 const { sendCustomerMail, sendAdminMail } = require("../lib/sendMail");
 
+// ★追加：GAS在庫API（/exec）
+const GAS_STOCK_URL = process.env.GAS_STOCK_URL;
+
+async function getStock(productId) {
+  if (!GAS_STOCK_URL) throw new Error("GAS_STOCK_URL_NOT_SET");
+  const url = `${GAS_STOCK_URL}?product_id=${encodeURIComponent(productId)}`;
+  const r = await fetch(url, { method: "GET" });
+  const text = await r.text();
+  let data;
+  try { data = JSON.parse(text); } catch { throw new Error("STOCK_API_NON_JSON"); }
+  if (!data || data.ok !== true) {
+    throw new Error(data?.error ? `STOCK_API_${data.error}` : "STOCK_API_ERROR");
+  }
+  return Number(data.stock ?? 0);
+}
+
+
 /* ---------- CORS ---------- */
 function setCors(req, res) {
   const allowed = ["https://shoumeiya.info", "https://www.shoumeiya.info"];
@@ -72,7 +89,36 @@ module.exports = async (req, res) => {
       .map((i) => ({ id: i.id, qty: Number(i.qty || 0) }))
       .filter((i) => i.id && i.qty > 0);
 
-    const amount = items.reduce(
+    
+    // ★追加：在庫チェック（Stripeと同じ：1つでも不足なら止める）
+    const out_of_stock = [];
+    const insufficient = [];
+
+    const qtyById = new Map();
+    for (const it of cartItems) {
+      qtyById.set(it.id, (qtyById.get(it.id) || 0) + Number(it.qty || 0));
+    }
+
+    for (const [productId, needQty] of qtyById.entries()) {
+      const stock = await getStock(productId);
+
+      if (stock <= 0) {
+        out_of_stock.push(productId);
+      } else if (needQty > stock) {
+        insufficient.push({ id: productId, need: needQty, have: stock });
+      }
+    }
+
+    if (out_of_stock.length > 0 || insufficient.length > 0) {
+      return res.status(409).json({
+        ok: false,
+        error: "OUT_OF_STOCK",
+        out_of_stock,
+        insufficient,
+      });
+    }
+
+const amount = items.reduce(
       (s, i) => s + Number(i.price || 0) * Number(i.qty || 0),
       0
     );
@@ -155,7 +201,6 @@ module.exports = async (req, res) => {
     return res.status(500).json({ ok: false, error: "server error" });
   }
 };
-
 
 
 
