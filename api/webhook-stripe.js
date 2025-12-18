@@ -4,6 +4,97 @@ const { sendCustomerMail, sendAdminMail } = require("../lib/sendMail");
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
+
+// ---- GAS 在庫減算（doPost） ----
+const GAS_STOCK_URL = process.env.GAS_STOCK_URL; // 例: https://script.google.com/macros/s/xxx/exec
+
+async function postJson(url, payload) {
+  // Node 18+ on Vercel has global fetch
+  if (typeof fetch === "function") {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const t = await r.text();
+    let j;
+    try { j = JSON.parse(t); } catch { j = { ok: false, error: "non-json", raw: t }; }
+    return j;
+  }
+
+  // Fallback (rare): use https
+  const https = require("https");
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(payload);
+    const u = new URL(url);
+    const req = https.request(
+      {
+        method: "POST",
+        hostname: u.hostname,
+        path: u.pathname + (u.search || ""),
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(data),
+        },
+      },
+      (res) => {
+        let buf = "";
+        res.on("data", (c) => (buf += c));
+        res.on("end", () => {
+          let j;
+          try { j = JSON.parse(buf); } catch { j = { ok: false, error: "non-json", raw: buf }; }
+          resolve(j);
+        });
+      }
+    );
+    req.on("error", reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+async function reduceStockForStripeSession(session) {
+  if (!GAS_STOCK_URL) {
+    console.warn("GAS_STOCK_URL is not set; skip stock reduce.");
+    return { ok: false, skipped: true, reason: "missing GAS_STOCK_URL" };
+  }
+
+  const cartStr = session?.metadata?.cart_items;
+  if (!cartStr) {
+    console.warn("session.metadata.cart_items not found; skip stock reduce.");
+    return { ok: false, skipped: true, reason: "missing cart_items" };
+  }
+
+  let cart;
+  try { cart = JSON.parse(cartStr); } catch {
+    console.warn("cart_items JSON parse failed; skip stock reduce.");
+    return { ok: false, skipped: true, reason: "bad cart_items json" };
+  }
+
+  if (!Array.isArray(cart) || cart.length === 0) {
+    return { ok: false, skipped: true, reason: "empty cart_items" };
+  }
+
+  const results = [];
+  for (const it of cart) {
+    const product_id = it?.id;
+    const qty = Number(it?.qty || 0);
+    if (!product_id || qty <= 0) continue;
+
+    // 1注文内に複数商品がある場合に備え、商品ごとにユニークなorder_idにする
+    const order_id = `stripe:${session.id}:${product_id}`;
+
+    const r = await postJson(GAS_STOCK_URL, { product_id, qty, order_id });
+    results.push({ product_id, qty, result: r });
+    if (!r.ok) {
+      console.error("GAS reduceStock failed:", { product_id, qty, order_id, r });
+    }
+  }
+
+  return { ok: true, results };
+}
+
+
 // raw body を受け取るための設定（Webhook署名検証に必須）
 module.exports.config = {
   api: { bodyParser: false },
@@ -60,6 +151,10 @@ module.exports = async function handler(req, res) {
         console.log("Skip email: payment_status =", session.payment_status);
         return res.status(200).json({ received: true, skipped: true });
       }
+
+            // 在庫減算（決済確定時）
+      const stockUpdate = await reduceStockForStripeSession(session);
+      console.log("Stock update result:", stockUpdate);
 
       const orderId = session.id; // ひとまずStripeのsession ID（必要ならmetadataに切替可）
       const email =
