@@ -5,6 +5,81 @@ const { sendCustomerMail, sendAdminMail } = require("../lib/sendMail");
 // ★GAS在庫API（doGet）
 const GAS_STOCK_URL = process.env.GAS_STOCK_URL;
 
+/* ---------------- GAS 在庫減算（doPost） ---------------- */
+// ※ success ページ（success-bank / success-cod）で減らすのは「二重実行」「改ざん」「到達しない」等が起き得るため非推奨。
+//    ここ（create-order API）で「注文受付が成立した時点」で減算します。
+//    GAS側が order_id で冪等（同じ order_id は二重減算しない）になっている前提です。
+
+async function postJson(url, payload) {
+  if (typeof fetch === "function") {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const t = await r.text();
+    let j;
+    try { j = JSON.parse(t); } catch { j = { ok: false, error: "non-json", raw: t }; }
+    return j;
+  }
+
+  // Fallback (rare): use https
+  const https = require("https");
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(payload);
+    const u = new URL(url);
+    const req = https.request(
+      {
+        method: "POST",
+        hostname: u.hostname,
+        path: u.pathname + (u.search || ""),
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(data),
+        },
+      },
+      (res) => {
+        let buf = "";
+        res.on("data", (c) => (buf += c));
+        res.on("end", () => {
+          let j;
+          try { j = JSON.parse(buf); } catch { j = { ok: false, error: "non-json", raw: buf }; }
+          resolve(j);
+        });
+      }
+    );
+    req.on("error", reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+// 銀行振込/代引き（オフライン決済）用：注文受付成立時に在庫減算
+async function reduceStockForOfflineOrder(orderId, qtyById) {
+  if (!GAS_STOCK_URL) {
+    console.warn("GAS_STOCK_URL is not set; cannot reduce stock for offline order.");
+    return { ok: false, skipped: true, reason: "missing GAS_STOCK_URL" };
+  }
+
+  const results = [];
+  for (const [product_id, qty] of qtyById.entries()) {
+    if (!product_id || !qty || qty <= 0) continue;
+
+    // 商品ごとにユニークな order_id（冪等用）
+    const order_id = `offline:${orderId}:${product_id}`;
+
+    const r = await postJson(GAS_STOCK_URL, { product_id, qty, order_id });
+    results.push({ product_id, qty, result: r });
+    if (!r.ok) {
+      console.error("GAS reduceStock failed:", { product_id, qty, order_id, r });
+      return { ok: false, results };
+    }
+  }
+  return { ok: true, results };
+}
+
+
+
 /* ---------------- CORS ---------------- */
 function setCors(req, res) {
   // ✅ 本番(独自ドメイン) + 開発(localhost) + プレビュー等でも動くように、来た Origin をそのまま返す
@@ -90,7 +165,19 @@ if (out_of_stock.length > 0 || insufficient.length > 0) {
 }
 
 
-    const shipping = 10; // checkout.html と合わせる
+    
+// ★在庫減算（銀行振込/代引き）
+// - success ページではなく、ここ（API）で減らすのが安全です
+const stockUpdate = await reduceStockForOfflineOrder(orderId, qtyById);
+if (!stockUpdate.ok) {
+  return res.status(500).json({
+    ok: false,
+    error: "STOCK_REDUCE_FAILED",
+    detail: stockUpdate.reason || "在庫の更新に失敗しました。時間をおいて再度お試しください。",
+  });
+}
+
+const shipping = 10; // checkout.html と合わせる
     const itemsTotal = items.reduce(
       (s, i) => s + Number(i.price || 0) * Number(i.qty || 0),
       0
@@ -165,8 +252,6 @@ if (
 return res.status(500).json({ ok: false, error: "Server error", detail: msg });
   }
 };
-
-
 
 
 
