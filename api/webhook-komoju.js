@@ -2,9 +2,8 @@
 const crypto = require("crypto");
 const { sendAdminMail } = require("../lib/sendMail");
 
-
 // ---- GAS 在庫減算（doPost） ----
-const GAS_STOCK_URL = process.env.GAS_STOCK_URL; // 例: https://script.google.com/macros/s/xxx/exec
+const GAS_STOCK_URL = process.env.GAS_STOCK_URL;
 
 async function postJson(url, payload) {
   if (typeof fetch === "function") {
@@ -52,23 +51,23 @@ async function postJson(url, payload) {
 async function reduceStockForKomojuPayment(payment) {
   if (!GAS_STOCK_URL) {
     console.warn("GAS_STOCK_URL is not set; skip stock reduce.");
-    return { ok: false, skipped: true, reason: "missing GAS_STOCK_URL" };
+    return { ok: false, skipped: true };
   }
 
   const cartStr = payment?.metadata?.cart_items;
   if (!cartStr) {
     console.warn("payment.metadata.cart_items not found; skip stock reduce.");
-    return { ok: false, skipped: true, reason: "missing cart_items" };
+    return { ok: false, skipped: true };
   }
 
   let cart;
   try { cart = JSON.parse(cartStr); } catch {
     console.warn("cart_items JSON parse failed; skip stock reduce.");
-    return { ok: false, skipped: true, reason: "bad cart_items json" };
+    return { ok: false, skipped: true };
   }
 
   if (!Array.isArray(cart) || cart.length === 0) {
-    return { ok: false, skipped: true, reason: "empty cart_items" };
+    return { ok: false, skipped: true };
   }
 
   const results = [];
@@ -80,6 +79,7 @@ async function reduceStockForKomojuPayment(payment) {
     const order_id = `komoju:${payment.id}:${product_id}`;
     const r = await postJson(GAS_STOCK_URL, { product_id, qty, order_id });
     results.push({ product_id, qty, result: r });
+
     if (!r.ok) {
       console.error("GAS reduceStock failed:", { product_id, qty, order_id, r });
     }
@@ -87,7 +87,6 @@ async function reduceStockForKomojuPayment(payment) {
 
   return { ok: true, results };
 }
-
 
 module.exports.config = {
   api: { bodyParser: false },
@@ -101,12 +100,16 @@ module.exports = async function handler(req, res) {
 
   // signature verify
   const secret = process.env.KOMOJU_WEBHOOK_SECRET || "";
-  const signature = req.headers["x-komoju-signature"]; // X-Komoju-Signature
+  const signature = req.headers["x-komoju-signature"];
 
   if (!secret) return res.status(500).send("Missing KOMOJU_WEBHOOK_SECRET");
   if (!signature) return res.status(400).send("Missing X-Komoju-Signature");
 
-  const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(rawBody)
+    .digest("hex");
+
   if (signature !== expected) {
     console.error("Invalid signature");
     return res.status(400).send("Invalid signature");
@@ -116,7 +119,7 @@ module.exports = async function handler(req, res) {
   let event;
   try {
     event = JSON.parse(rawBody.toString("utf8"));
-  } catch (e) {
+  } catch {
     return res.status(400).send("Invalid JSON");
   }
 
@@ -125,22 +128,34 @@ module.exports = async function handler(req, res) {
 
   // ping
   if (type === "ping") {
-    return res.status(200).json({ ok: true, pong: true });
+    return res.status(200).json({ ok: true });
   }
 
-  // payment captured -> admin notify
+  // ===== 入金確定 =====
   if (type === "payment.captured") {
     try {
       const payment = event.data || {};
 
-      const stockUpdate = await reduceStockForKomojuPayment(payment);
-      console.log("Stock update result:", stockUpdate);
-      const orderId = payment.external_order_num || payment.id || "(no id)";
-      const method = payment.payment_method || "(unknown)";
+      // ★ 在庫減算（既存）
+      await reduceStockForKomojuPayment(payment);
 
+      // ★ 表示用データ（←ここだけが本質的修正）
+      const orderId =
+        payment.external_order_num || payment.id || "(no id)";
+
+      const method =
+        payment.payment_method?.type ||
+        payment.payment_type ||
+        "(unknown)";
+
+      // ★ 管理者メール（表示を正常化）
       await sendAdminMail({
         subject: `【入金確認】KOMOJU / ${orderId}`,
-        html: `<p>type:${type}</p><p>order:${orderId}</p><p>method:${method}</p><pre>${JSON.stringify(stockUpdate, null, 2)}</pre>`,
+        html: `
+          <h3>入金確認（KOMOJU）</h3>
+          <p>注文番号：${orderId}</p>
+          <p>支払方法：${method}</p>
+        `,
       });
     } catch (e) {
       console.error("KOMOJU webhook error:", e);
