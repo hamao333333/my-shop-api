@@ -99,21 +99,12 @@ module.exports = async (req, res) => {
 
     for (const [productId, needQty] of qtyById.entries()) {
       const stock = await getStock(productId);
-
-      if (stock <= 0) {
-        out_of_stock.push(productId);
-      } else if (needQty > stock) {
-        insufficient.push({ id: productId, need: needQty, have: stock });
-      }
+      if (stock <= 0) out_of_stock.push(productId);
+      else if (needQty > stock) insufficient.push({ id: productId, need: needQty, have: stock });
     }
 
     if (out_of_stock.length > 0 || insufficient.length > 0) {
-      return res.status(409).json({
-        ok: false,
-        error: "OUT_OF_STOCK",
-        out_of_stock,
-        insufficient,
-      });
+      return res.status(409).json({ ok: false, error: "OUT_OF_STOCK", out_of_stock, insufficient });
     }
 
     const amount = items.reduce(
@@ -136,7 +127,7 @@ module.exports = async (req, res) => {
 
     /* ---------- 管理者メール（受付） ---------- */
     const itemLines = items
-      .map(i => `・${i.name} ×${i.qty}（${i.price.toLocaleString()}円）`)
+      .map((i) => `・${i.name} ×${i.qty}（${Number(i.price || 0).toLocaleString()}円）`)
       .join("<br>");
 
     await sendAdminMail({
@@ -171,6 +162,26 @@ module.exports = async (req, res) => {
       `,
     });
 
+    // ★最小追加：webhookでメール整形できるように、明細と購入者情報を metadata に入れる
+    const itemsForMeta = items.map((i) => ({
+      id: i.id,
+      name: i.name,
+      price: Number(i.price || 0),
+      qty: Number(i.qty || 0),
+    }));
+
+    const customerForMeta = {
+      name: customer.name || "",
+      nameKana: customer.nameKana || "",
+      email: customer.email || "",
+      phone: customer.phone || "",
+      zip: customer.zip || "",
+      address1: customer.address1 || "",
+      address2: customer.address2 || "",
+      deliveryTime: customer.deliveryTime || "",
+      notes: customer.notes || "",
+    };
+
     /* ---------- KOMOJU セッション ---------- */
     const session = await createSession(
       {
@@ -180,8 +191,14 @@ module.exports = async (req, res) => {
         external_order_num: orderId,
         payment_types: [method],
 
-        // ★ここだけ最小修正：order_id を metadata に入れる（webhook側が確実に拾える）
-        metadata: { order_id: orderId, cart_items: JSON.stringify(cartItems) },
+        // ★ここが追加（最小）
+        metadata: {
+          order_id: orderId,
+          cart_items: JSON.stringify(cartItems),
+          items: JSON.stringify(itemsForMeta),
+          customer: JSON.stringify(customerForMeta),
+          amount: String(amount),
+        },
 
         return_url:
           `https://shoumeiya.info/success-komoju.html` +
