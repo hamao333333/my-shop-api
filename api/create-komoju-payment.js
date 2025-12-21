@@ -18,7 +18,6 @@ async function getStock(productId) {
   return Number(data.stock ?? 0);
 }
 
-
 /* ---------- CORS ---------- */
 function setCors(req, res) {
   const allowed = ["https://shoumeiya.info", "https://www.shoumeiya.info"];
@@ -89,8 +88,7 @@ module.exports = async (req, res) => {
       .map((i) => ({ id: i.id, qty: Number(i.qty || 0) }))
       .filter((i) => i.id && i.qty > 0);
 
-    
-    // ★追加：在庫チェック（Stripeと同じ：1つでも不足なら止める）
+    // ★在庫チェック（1つでも不足なら止める）
     const out_of_stock = [];
     const insufficient = [];
 
@@ -118,7 +116,7 @@ module.exports = async (req, res) => {
       });
     }
 
-const amount = items.reduce(
+    const amount = items.reduce(
       (s, i) => s + Number(i.price || 0) * Number(i.qty || 0),
       0
     );
@@ -181,8 +179,10 @@ const amount = items.reduce(
         customer_email: customer.email,
         external_order_num: orderId,
         payment_types: [method],
-        // 在庫減算用（webhookで参照）
-        metadata: { cart_items: JSON.stringify(cartItems) },
+
+        // ★ここだけ最小修正：order_id を metadata に入れる（webhook側が確実に拾える）
+        metadata: { order_id: orderId, cart_items: JSON.stringify(cartItems) },
+
         return_url:
           `https://shoumeiya.info/success-komoju.html` +
           `?order_id=${encodeURIComponent(orderId)}` +
@@ -201,7 +201,6 @@ const amount = items.reduce(
     return res.status(500).json({ ok: false, error: "server error" });
   }
 };
-
 
 
 
