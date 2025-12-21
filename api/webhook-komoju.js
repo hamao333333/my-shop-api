@@ -131,12 +131,16 @@ module.exports = async function handler(req, res) {
     try {
       const payment = event.data || {};
 
-      // 在庫減算（既存のまま）
-      await reduceStockForKomojuPayment(payment);
+      const stockUpdate = await reduceStockForKomojuPayment(payment);
+      console.log("Stock update result:", stockUpdate);
 
-      const orderId = payment.external_order_num || payment.id || "(no id)";
+      // ★ここだけ最小修正：success.html と同じ order_id を最優先で採用
+      const orderId =
+        payment?.metadata?.order_id ||
+        payment.external_order_num ||
+        payment.id ||
+        "(no id)";
 
-      // ★ここだけ最小修正：取りこぼしを無くす
       const method =
         payment.payment_method?.type ||
         (typeof payment.payment_method === "string" ? payment.payment_method : null) ||
