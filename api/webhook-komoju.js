@@ -3,7 +3,7 @@ const crypto = require("crypto");
 const { sendAdminMail } = require("../lib/sendMail");
 
 // ---- GAS 在庫減算（doPost） ----
-const GAS_STOCK_URL = process.env.GAS_STOCK_URL;
+const GAS_STOCK_URL = process.env.GAS_STOCK_URL; // 例: https://script.google.com/macros/s/xxx/exec
 
 async function postJson(url, payload) {
   if (typeof fetch === "function") {
@@ -51,23 +51,23 @@ async function postJson(url, payload) {
 async function reduceStockForKomojuPayment(payment) {
   if (!GAS_STOCK_URL) {
     console.warn("GAS_STOCK_URL is not set; skip stock reduce.");
-    return { ok: false, skipped: true };
+    return { ok: false, skipped: true, reason: "missing GAS_STOCK_URL" };
   }
 
   const cartStr = payment?.metadata?.cart_items;
   if (!cartStr) {
     console.warn("payment.metadata.cart_items not found; skip stock reduce.");
-    return { ok: false, skipped: true };
+    return { ok: false, skipped: true, reason: "missing cart_items" };
   }
 
   let cart;
   try { cart = JSON.parse(cartStr); } catch {
     console.warn("cart_items JSON parse failed; skip stock reduce.");
-    return { ok: false, skipped: true };
+    return { ok: false, skipped: true, reason: "bad cart_items json" };
   }
 
   if (!Array.isArray(cart) || cart.length === 0) {
-    return { ok: false, skipped: true };
+    return { ok: false, skipped: true, reason: "empty cart_items" };
   }
 
   const results = [];
@@ -79,7 +79,6 @@ async function reduceStockForKomojuPayment(payment) {
     const order_id = `komoju:${payment.id}:${product_id}`;
     const r = await postJson(GAS_STOCK_URL, { product_id, qty, order_id });
     results.push({ product_id, qty, result: r });
-
     if (!r.ok) {
       console.error("GAS reduceStock failed:", { product_id, qty, order_id, r });
     }
@@ -100,16 +99,12 @@ module.exports = async function handler(req, res) {
 
   // signature verify
   const secret = process.env.KOMOJU_WEBHOOK_SECRET || "";
-  const signature = req.headers["x-komoju-signature"];
+  const signature = req.headers["x-komoju-signature"]; // X-Komoju-Signature
 
   if (!secret) return res.status(500).send("Missing KOMOJU_WEBHOOK_SECRET");
   if (!signature) return res.status(400).send("Missing X-Komoju-Signature");
 
-  const expected = crypto
-    .createHmac("sha256", secret)
-    .update(rawBody)
-    .digest("hex");
-
+  const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
   if (signature !== expected) {
     console.error("Invalid signature");
     return res.status(400).send("Invalid signature");
@@ -119,7 +114,7 @@ module.exports = async function handler(req, res) {
   let event;
   try {
     event = JSON.parse(rawBody.toString("utf8"));
-  } catch {
+  } catch (e) {
     return res.status(400).send("Invalid JSON");
   }
 
@@ -128,27 +123,27 @@ module.exports = async function handler(req, res) {
 
   // ping
   if (type === "ping") {
-    return res.status(200).json({ ok: true });
+    return res.status(200).json({ ok: true, pong: true });
   }
 
-  // ===== 入金確定 =====
+  // payment captured -> admin notify
   if (type === "payment.captured") {
     try {
       const payment = event.data || {};
 
-      // ★ 在庫減算（既存）
+      // 在庫減算（既存のまま）
       await reduceStockForKomojuPayment(payment);
 
-      // ★ 表示用データ（←ここだけが本質的修正）
-      const orderId =
-        payment.external_order_num || payment.id || "(no id)";
+      const orderId = payment.external_order_num || payment.id || "(no id)";
 
+      // ★ここだけ最小修正：取りこぼしを無くす
       const method =
         payment.payment_method?.type ||
+        (typeof payment.payment_method === "string" ? payment.payment_method : null) ||
         payment.payment_type ||
+        payment.payment_details?.type ||
         "(unknown)";
 
-      // ★ 管理者メール（表示を正常化）
       await sendAdminMail({
         subject: `【入金確認】KOMOJU / ${orderId}`,
         html: `
