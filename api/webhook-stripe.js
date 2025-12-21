@@ -4,7 +4,6 @@ const { sendCustomerMail, sendAdminMail } = require("../lib/sendMail");
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-
 // ---- GAS 在庫減算（doPost） ----
 const GAS_STOCK_URL = process.env.GAS_STOCK_URL; // 例: https://script.google.com/macros/s/xxx/exec
 
@@ -94,14 +93,12 @@ async function reduceStockForStripeSession(session) {
   return { ok: true, results };
 }
 
-
 // raw body を受け取るための設定（Webhook署名検証に必須）
 module.exports.config = {
   api: { bodyParser: false },
 };
 
 // 通貨の最小単位 → 表示金額へ
-// Stripeの amount は「最小通貨単位」(JPYは 1円単位 / USDは 1セント単位)
 function amountToDisplay(currency, amountInSmallestUnit) {
   const cur = String(currency || "").toUpperCase();
   const amount = Number(amountInSmallestUnit || 0);
@@ -110,7 +107,6 @@ function amountToDisplay(currency, amountInSmallestUnit) {
   const zeroDecimal = new Set(["JPY", "KRW", "VND"]);
   if (zeroDecimal.has(cur)) return amount;
 
-  // それ以外は 100 で割る（一般的なケース）
   return amount / 100;
 }
 
@@ -136,9 +132,6 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    // ✅ 送信タイミング：
-    // - checkout.session.completed は基本OK（カードなら即 paid になりやすい）
-    // - 非同期決済の安全策として async_payment_succeeded も拾う
     if (
       event.type === "checkout.session.completed" ||
       event.type === "checkout.session.async_payment_succeeded"
@@ -146,22 +139,37 @@ module.exports = async function handler(req, res) {
       const session = event.data.object;
 
       // paid（入金済み）のときだけ送る
-      // ※ completed でも unpaid が来るケースがあるので保険
       if (session.payment_status && session.payment_status !== "paid") {
         console.log("Skip email: payment_status =", session.payment_status);
         return res.status(200).json({ received: true, skipped: true });
       }
 
-            // 在庫減算（決済確定時）
+      // 在庫減算（決済確定時）
       const stockUpdate = await reduceStockForStripeSession(session);
       console.log("Stock update result:", stockUpdate);
 
-      const orderId = session.id; // ひとまずStripeのsession ID（必要ならmetadataに切替可）
+      // ✅ 画面の注文番号（success.html と一致させたいなら metadata.order_id を使う）
+      const orderId = session?.metadata?.order_id || session.id;
+
       const email =
         session.customer_details?.email ||
         session.customer_email ||
         session.customer?.email ||
         null;
+
+      // ★追加（最小）：購入者情報（checkout.html入力→create-checkout-session の metadata）
+      const meta = session.metadata || {};
+      const buyer = {
+        name: meta.name || session.customer_details?.name || "",
+        nameKana: meta.name_kana || "",
+        email: meta.email || email || "",
+        phone: meta.phone || "",
+        zip: meta.zip || "",
+        address1: meta.address1 || "",
+        address2: meta.address2 || "",
+        deliveryTime: meta.delivery_time || "",
+        notes: meta.notes || "",
+      };
 
       // 商品一覧取得
       const lineItems = await stripe.checkout.sessions.listLineItems(
@@ -174,7 +182,6 @@ module.exports = async function handler(req, res) {
       const items = (lineItems.data || []).map((li) => {
         const qty = Number(li.quantity || 0);
 
-        // line item には amount_total が来る（最小通貨単位）
         const total = Number(li.amount_total || 0);
         const unit = qty > 0 ? Math.round(total / qty) : 0;
 
@@ -194,15 +201,34 @@ module.exports = async function handler(req, res) {
         })
         .join("<br>");
 
+      // 合計（セッション側の合計を優先）
+      const totalDisp = amountToDisplay(currency, session.amount_total || 0);
+
+      const buyerBlock = `
+        <h3>購入者情報</h3>
+        <p>氏名：${buyer.name}</p>
+        <p>カナ：${buyer.nameKana}</p>
+        <p>メール：${buyer.email}</p>
+        <p>電話：${buyer.phone}</p>
+        <p>郵便：${buyer.zip}</p>
+        <p>住所：${buyer.address1} ${buyer.address2}</p>
+        <p>配達時間：${buyer.deliveryTime}</p>
+        <p>備考：${buyer.notes}</p>
+      `;
+
       // 管理者メール（必ず）
       await sendAdminMail({
-        subject: `【新規注文】Stripe決済 / ${orderId}`,
+        subject: `【入金確認】Stripe決済 / ${orderId}`,
         html: `
           <p>Stripe決済が完了しました。</p>
           <p>注文番号：<strong>${orderId}</strong></p>
-          <p>購入者メール：${email || "(none)"}</p>
           <p>通貨：${currency}</p>
-          <hr>${lines}
+          <p><strong>合計：${Number(totalDisp).toLocaleString()} ${currency}</strong></p>
+          <hr>
+          ${buyerBlock}
+          <hr>
+          <h3>明細</h3>
+          ${lines}
         `,
       });
 
@@ -215,7 +241,12 @@ module.exports = async function handler(req, res) {
             <p>ご注文ありがとうございます。</p>
             <p>注文番号：<strong>${orderId}</strong></p>
             <p>お支払いを確認しました。</p>
-            <hr>${lines}
+            <p><strong>合計：${Number(totalDisp).toLocaleString()} ${currency}</strong></p>
+            <hr>
+            ${buyerBlock}
+            <hr>
+            <h3>明細</h3>
+            ${lines}
           `,
         });
       } else {
