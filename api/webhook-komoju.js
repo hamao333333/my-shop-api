@@ -79,9 +79,7 @@ async function reduceStockForKomojuPayment(payment) {
     const order_id = `komoju:${payment.id}:${product_id}`;
     const r = await postJson(GAS_STOCK_URL, { product_id, qty, order_id });
     results.push({ product_id, qty, result: r });
-    if (!r.ok) {
-      console.error("GAS reduceStock failed:", { product_id, qty, order_id, r });
-    }
+    if (!r.ok) console.error("GAS reduceStock failed:", { product_id, qty, order_id, r });
   }
 
   return { ok: true, results };
@@ -131,16 +129,17 @@ module.exports = async function handler(req, res) {
     try {
       const payment = event.data || {};
 
-      const stockUpdate = await reduceStockForKomojuPayment(payment);
-      console.log("Stock update result:", stockUpdate);
+      // 在庫減算（既存）
+      await reduceStockForKomojuPayment(payment);
 
-      // ★ここだけ最小修正：success.html と同じ order_id を最優先で採用
+      // 注文番号（success画面と一致）
       const orderId =
         payment?.metadata?.order_id ||
         payment.external_order_num ||
         payment.id ||
         "(no id)";
 
+      // 支払方法
       const method =
         payment.payment_method?.type ||
         (typeof payment.payment_method === "string" ? payment.payment_method : null) ||
@@ -148,12 +147,42 @@ module.exports = async function handler(req, res) {
         payment.payment_details?.type ||
         "(unknown)";
 
+      // ★追加（最小）：metadata から明細/購入者/合計を復元
+      let items = [];
+      try { items = JSON.parse(payment?.metadata?.items || "[]"); } catch { items = []; }
+
+      let customer = {};
+      try { customer = JSON.parse(payment?.metadata?.customer || "{}"); } catch { customer = {}; }
+
+      const amount =
+        Number(payment?.metadata?.amount || payment?.amount || 0);
+
+      const itemLines = Array.isArray(items) && items.length
+        ? items
+            .map((i) => `・${i.name} ×${i.qty}（${Number(i.price || 0).toLocaleString()}円）`)
+            .join("<br>")
+        : "<p>（明細なし）</p>";
+
       await sendAdminMail({
         subject: `【入金確認】KOMOJU / ${orderId}`,
         html: `
           <h3>入金確認（KOMOJU）</h3>
           <p>注文番号：${orderId}</p>
           <p>支払方法：${method}</p>
+          <hr>
+          <h3>購入者情報</h3>
+          <p>氏名：${customer.name || ""}</p>
+          <p>カナ：${customer.nameKana || ""}</p>
+          <p>メール：${customer.email || payment.customer_email || ""}</p>
+          <p>電話：${customer.phone || ""}</p>
+          <p>郵便：${customer.zip || ""}</p>
+          <p>住所：${customer.address1 || ""} ${customer.address2 || ""}</p>
+          <p>配達時間：${customer.deliveryTime || ""}</p>
+          <p>備考：${customer.notes || ""}</p>
+          <hr>
+          <h3>明細</h3>
+          ${itemLines}
+          <p><strong>合計：${amount.toLocaleString()}円</strong></p>
         `,
       });
     } catch (e) {
